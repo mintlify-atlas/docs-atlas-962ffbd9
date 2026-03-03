@@ -1,0 +1,152 @@
+{
+  "projectType": "framework",
+  "projectName": "ReXGlue",
+  "projectDescription": "Xbox 360 recompilation framework that converts PowerPC code into portable C++",
+  "theme": "aspen",
+  "primaryColor": "#52B043",
+  "lightColor": "#6FCF5E",
+  "darkColor": "#3D9432",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "architecture",
+              "installation",
+              "quickstart"
+            ]
+          },
+          {
+            "group": "CLI Reference",
+            "pages": [
+              "cli/overview",
+              "cli/init",
+              "cli/codegen",
+              "cli/migrate",
+              "cli/recompile-tests"
+            ]
+          },
+          {
+            "group": "Configuration",
+            "pages": [
+              "config/overview",
+              "config/project-config",
+              "config/codegen-config",
+              "config/functions",
+              "config/hooks"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/recompilation",
+              "concepts/ppc-emulation",
+              "concepts/memory-model",
+              "concepts/kernel-emulation"
+            ]
+          },
+          {
+            "group": "Application Development",
+            "pages": [
+              "app/rexapp",
+              "app/runtime-setup",
+              "app/custom-hooks",
+              "app/ui-integration"
+            ]
+          },
+          {
+            "group": "Advanced",
+            "pages": [
+              "advanced/exception-handlers",
+              "advanced/debugging",
+              "advanced/optimization",
+              "advanced/platform-support"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Runtime",
+            "pages": [
+              "api/runtime",
+              "api/runtime-config"
+            ]
+          },
+          {
+            "group": "Application",
+            "pages": [
+              "api/rexapp",
+              "api/ppc-image-info",
+              "api/path-config"
+            ]
+          },
+          {
+            "group": "Codegen",
+            "pages": [
+              "api/recompiler",
+              "api/recompiler-config",
+              "api/function-config"
+            ]
+          },
+          {
+            "group": "Subsystems",
+            "pages": [
+              "api/graphics-system",
+              "api/audio-system",
+              "api/input-system",
+              "api/kernel-state"
+            ]
+          },
+          {
+            "group": "Memory & Threading",
+            "pages": [
+              "api/memory",
+              "api/processor",
+              "api/thread"
+            ]
+          },
+          {
+            "group": "Filesystem",
+            "pages": [
+              "api/vfs",
+              "api/xex-module"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Static recompilation of Xbox 360 PowerPC executables to portable C++",
+    "Complete Xbox 360 kernel and system call emulation",
+    "Cross-platform graphics backends (D3D12 on Windows, Vulkan on Linux)",
+    "Audio and input system abstraction",
+    "Virtual filesystem with content package support",
+    "CLI tooling for project initialization and code generation",
+    "Customizable runtime with application framework",
+    "Exception handler and debugging support"
+  ],
+  "publicApiSurface": [
+    "rexglue init - Initialize new recompilation project",
+    "rexglue codegen - Generate C++ from XEX executable",
+    "rexglue migrate - Migrate project to current SDK version",
+    "rex::Runtime - Main runtime initialization and subsystem management",
+    "rex::ReXApp - Base class for recompiled applications",
+    "rex::RuntimeConfig - Runtime backend configuration",
+    "rex::codegen::Recompiler - Code generation engine",
+    "rex::codegen::RecompilerConfig - Codegen configuration from TOML",
+    "rex::memory::Memory - Virtual memory management",
+    "rex::filesystem::VirtualFileSystem - VFS abstraction",
+    "rex::system::KernelState - Kernel object and thread management",
+    "rex::system::IGraphicsSystem - Graphics backend interface",
+    "rex::system::IAudioSystem - Audio backend interface",
+    "rex::system::IInputSystem - Input backend interface"
+  ]
+}
