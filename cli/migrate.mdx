@@ -1,0 +1,256 @@
+---
+title: "rexglue migrate"
+description: "Migrate existing projects to the current SDK version"
+---
+
+The `migrate` command updates SDK-managed files in an existing ReXGlue project to match the current SDK templates. This ensures projects stay compatible with SDK updates.
+
+## Usage
+
+```bash
+rexglue migrate --app-root <path> [flags]
+```
+
+## Required Flags
+
+<ParamField path="--app-root" type="string" required>
+  Path to existing ReXGlue project root directory
+  
+  Must contain a valid ReXGlue project with `src/main.cpp` and a `*_config.toml` file.
+</ParamField>
+
+## Optional Flags
+
+<ParamField path="--force" type="boolean" default="false">
+  Skip confirmation prompt and overwrite files immediately
+  
+  By default, migrate shows which files will be changed and asks for confirmation.
+</ParamField>
+
+## SDK-Managed Files
+
+The following files are overwritten during migration:
+
+- `CMakeLists.txt` - Build configuration and SDK integration
+- `src/main.cpp` - Application entry point and ReXApp setup
+
+These files are regenerated from current SDK templates using the project name from your configuration file.
+
+## User-Managed Files
+
+The following files are **never** modified by migrate:
+
+- `*_config.toml` - Your codegen configuration
+- `CMakePresets.json` - Build presets
+- Custom source files in `src/`
+- Generated code in `generated/`
+- Any other files you've added
+
+## Examples
+
+### Basic Migration
+
+```bash
+rexglue migrate --app-root ./my_game_project
+```
+
+Output:
+```
+ReXGlue v0.1.0 - Xbox 360 Recompilation Toolkit
+The following files will be overwritten:
+  CMakeLists.txt
+  src/main.cpp
+
+Any local changes to these files will be lost.
+Continue? [y/N] y
+Migrating project 'my_game' at: ./my_game_project
+  Overwrote src/main.cpp
+  Overwrote CMakeLists.txt
+Migration complete. Re-run CMake configure to pick up changes.
+Operation completed successfully in 0.045s
+```
+
+### Force Migration Without Prompt
+
+```bash
+rexglue migrate --app-root ./my_game_project --force
+```
+
+Output:
+```
+ReXGlue v0.1.0 - Xbox 360 Recompilation Toolkit
+Migrating project 'my_game' at: ./my_game_project
+  Overwrote src/main.cpp
+  Overwrote CMakeLists.txt
+Migration complete. Re-run CMake configure to pick up changes.
+Operation completed successfully in 0.038s
+```
+
+### No Changes Needed
+
+```bash
+rexglue migrate --app-root ./my_game_project
+```
+
+Output:
+```
+ReXGlue v0.1.0 - Xbox 360 Recompilation Toolkit
+Project 'my_game' is already up to date.
+Operation completed successfully in 0.012s
+```
+
+## Migration Workflow
+
+1. **Detects project name** from `*_config.toml` in the project root
+2. **Checks existing files** against current SDK templates
+3. **Lists modified files** and prompts for confirmation (unless `--force`)
+4. **Overwrites SDK-managed files** with current templates
+5. **Preserves customizations** in non-managed files
+
+## After Migration
+
+After successful migration, you must reconfigure your CMake build:
+
+```bash
+# Reconfigure CMake
+cmake --preset=linux-amd64-debug
+
+# Rebuild the project
+cmake --build out/build/linux-amd64-debug
+```
+
+This ensures CMake picks up any changes to `CMakeLists.txt`.
+
+## When to Migrate
+
+Run `rexglue migrate` when:
+
+- **Updating the SDK** to a new version
+- **Build errors occur** after SDK updates
+- **New SDK features** require template changes (e.g., new CMake functions)
+- **Prompted by SDK documentation** for breaking changes
+
+## Preserving Customizations
+
+### Do NOT Customize SDK-Managed Files
+
+Files marked as "SDK-managed" in their header comments will be overwritten:
+
+```cpp
+// src/main.cpp
+// This file is SDK-managed. Customizations go in virtual hook overrides.
+// Running 'rexglue migrate' will overwrite this file.
+```
+
+### Where to Add Custom Code
+
+<CodeGroup>
+
+```cpp Custom Application Hooks
+// src/my_game_hooks.cpp
+#include "generated/my_game_config.h"
+#include <rex/rex_app.h>
+
+class MyGameApp : public rex::ReXApp {
+ public:
+  using rex::ReXApp::ReXApp;
+
+  // Override initialization
+  void OnInit() override {
+    ReXApp::OnInit();
+    // Your custom initialization here
+  }
+
+  // Override frame update
+  void OnUpdate(float delta) override {
+    // Your custom game logic here
+    ReXApp::OnUpdate(delta);
+  }
+};
+```
+
+```cpp Custom CMake Configuration
+# Add a custom CMakeLists.txt.user (never overwritten)
+# my_game_project/CMakeLists.txt.user
+
+# Add custom source files
+target_sources(my_game PRIVATE
+    src/my_game_hooks.cpp
+    src/custom_logic.cpp
+)
+
+# Add custom compile definitions
+target_compile_definitions(my_game PRIVATE
+    MY_CUSTOM_DEFINE=1
+)
+```
+
+</CodeGroup>
+
+Then include the user file in `CMakeLists.txt` (this line won't be removed by migrate if you add it once):
+
+```cmake
+# At the end of CMakeLists.txt
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt.user")
+    include(CMakeLists.txt.user)
+endif()
+```
+
+## Common Errors
+
+### Project Directory Not Found
+
+```
+Project directory does not exist: ./my_game_project
+```
+
+**Solution:** Verify the path is correct and the directory exists.
+
+### Not a ReXGlue Project
+
+```
+Not a rexglue project (no src/main.cpp): ./my_game_project
+```
+
+**Solution:** Ensure you're running migrate on a valid ReXGlue project initialized with [`rexglue init`](/cli/init).
+
+### No Configuration File
+
+```
+No *_config.toml found in project root: ./my_game_project
+```
+
+**Solution:** Ensure your project has a configuration file (e.g., `my_game_config.toml`) in the root directory.
+
+### Missing app_root Flag
+
+```
+--app_root is required for migrate command
+```
+
+**Solution:** Provide the project path with `--app-root`.
+
+## Migration Checklist
+
+Before migrating:
+
+- [ ] **Commit your changes** to version control
+- [ ] **Review SDK changelog** for breaking changes
+- [ ] **Backup custom modifications** if you edited SDK-managed files
+
+After migrating:
+
+- [ ] **Reconfigure CMake** with your preset
+- [ ] **Rebuild the project** to verify everything compiles
+- [ ] **Test your application** to ensure functionality is preserved
+- [ ] **Commit migration changes** to version control
+
+## Version Compatibility
+
+Migration always updates to the **current SDK version** bundled with the `rexglue` binary. There is no way to migrate to a specific older version.
+
+If you need to maintain multiple SDK versions:
+
+1. Use separate `rexglue` binary installations
+2. Pin your SDK version in your build system
+3. Document the required SDK version in your project README

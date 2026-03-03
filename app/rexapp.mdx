@@ -1,0 +1,272 @@
+---
+title: ReXApp Base Class
+description: Base class for recompiled Xbox 360 applications
+---
+
+The `ReXApp` class is the foundation for building recompiled Xbox 360 applications with ReXGlue. It handles all boilerplate setup including runtime initialization, window creation, ImGui integration, module launch, and shutdown.
+
+## Overview
+
+`ReXApp` provides a complete application framework that:
+
+- Initializes the Runtime subsystem with configurable backends
+- Creates and manages the application window
+- Sets up ImGui for debug overlays and UI
+- Launches the recompiled PPC module on a background thread
+- Provides virtual hooks for customization without modifying framework code
+
+## Class Declaration
+
+Defined in `rex/rex_app.h`:
+
+```cpp
+class ReXApp : public ui::WindowedApp, 
+               public ui::WindowListener, 
+               public ui::WindowInputListener
+```
+
+## Basic Usage
+
+The typical pattern is to subclass `ReXApp` in your `main.cpp`:
+
+```cpp
+#include "generated/my_game_config.h"
+#include "generated/my_game_init.h"
+#include <rex/rex_app.h>
+
+class MyGameApp : public rex::ReXApp {
+ public:
+  using rex::ReXApp::ReXApp;
+
+  static std::unique_ptr<rex::ui::WindowedApp> Create(
+      rex::ui::WindowedAppContext& ctx) {
+    return std::unique_ptr<MyGameApp>(new MyGameApp(ctx, "my_game",
+        {PPC_CODE_BASE, PPC_CODE_SIZE, PPC_IMAGE_BASE,
+         PPC_IMAGE_SIZE, PPCFuncMappings}));
+  }
+};
+
+REX_DEFINE_APP(my_game, MyGameApp::Create)
+```
+
+This minimal implementation inherits all default behavior. Customize by overriding virtual hooks.
+
+## Constructor
+
+```cpp
+protected:
+ReXApp(ui::WindowedAppContext& ctx, 
+       std::string_view name, 
+       PPCImageInfo ppc_info,
+       std::string_view usage = "[game_directory]");
+```
+
+### Parameters
+
+- **ctx**: Window system context from the platform entry point
+- **name**: Application name (used for window title, logging)
+- **ppc_info**: PPC image layout from generated config header
+- **usage**: Optional command-line usage string
+
+### PPCImageInfo Structure
+
+```cpp
+struct PPCImageInfo {
+  uint32_t code_base;      // PPC code section base address
+  uint32_t code_size;      // PPC code section size
+  uint32_t image_base;     // Full image base address
+  uint32_t image_size;     // Full image size
+  const PPCFuncMapping* func_mappings;  // Function dispatch table
+};
+```
+
+These values come from the generated config header created by `rexglue codegen`.
+
+## Virtual Hooks
+
+See [Custom Hooks](/app/custom-hooks) for detailed documentation of all customization points.
+
+## Protected Accessors
+
+Subclasses can access framework objects through protected methods:
+
+### Runtime Access
+
+```cpp
+Runtime* runtime() const
+```
+
+Access the Runtime instance for subsystem queries:
+
+```cpp
+void OnPostSetup() override {
+  auto* graphics = runtime()->graphics_system();
+  auto* kernel = runtime()->kernel_state();
+}
+```
+
+See `rex/rex_app.h:106`
+
+### Window Access
+
+```cpp
+ui::Window* window() const
+```
+
+Access the application window for input, sizing, etc.
+
+See `rex/rex_app.h:107`
+
+### ImGui Drawer Access
+
+```cpp
+ui::ImGuiDrawer* imgui_drawer() const
+```
+
+Access the ImGui drawer to add custom dialogs:
+
+```cpp
+void OnCreateDialogs(ui::ImGuiDrawer* drawer) override {
+  drawer->AddDialog(new MyCustomDialog(drawer));
+}
+```
+
+See `rex/rex_app.h:108`
+
+### Path Configuration
+
+```cpp
+const std::filesystem::path& game_data_root() const
+const std::filesystem::path& user_data_root() const
+const std::filesystem::path& update_data_root() const
+```
+
+Access configured data paths. These are set during initialization and can be customized via `OnConfigurePaths()`.
+
+See `rex/rex_app.h:110-112`
+
+## Initialization Sequence
+
+Understanding the initialization order helps you choose the right hook:
+
+<Steps>
+  <Step title="Path Configuration">
+    Default paths are computed from CLI args and cvars. `OnConfigurePaths()` is called to allow customization.
+  </Step>
+  
+  <Step title="Runtime Construction">
+    Runtime is constructed with the configured paths.
+  </Step>
+  
+  <Step title="Pre-Setup Hook">
+    `OnPreSetup()` is called. This is your chance to configure backend injection before Runtime::Setup().
+  </Step>
+  
+  <Step title="Runtime Setup">
+    `Runtime::Setup()` initializes all subsystems (memory, VFS, kernel, graphics, audio, input).
+  </Step>
+  
+  <Step title="Post-Setup Hook">
+    `OnPostSetup()` is called. Runtime is fully initialized, window not yet created.
+  </Step>
+  
+  <Step title="Window Creation">
+    Application window is created and shown.
+  </Step>
+  
+  <Step title="ImGui Initialization">
+    ImGui drawer is created and default dialogs (console, debug overlay) are registered.
+  </Step>
+  
+  <Step title="Custom Dialogs Hook">
+    `OnCreateDialogs()` is called to add application-specific UI.
+  </Step>
+  
+  <Step title="Module Launch">
+    PPC module is launched on a background thread. Game code begins executing.
+  </Step>
+</Steps>
+
+## Shutdown Sequence
+
+When the application closes:
+
+<Steps>
+  <Step title="Shutdown Initiated">
+    User closes window or game code calls exit.
+  </Step>
+  
+  <Step title="Custom Shutdown Hook">
+    `OnShutdown()` is called. Release custom resources here.
+  </Step>
+  
+  <Step title="Module Thread Join">
+    Background thread running PPC code is joined.
+  </Step>
+  
+  <Step title="Runtime Cleanup">
+    Runtime subsystems are shut down in reverse order.
+  </Step>
+  
+  <Step title="Window Destruction">
+    Window and UI resources are released.
+  </Step>
+</Steps>
+
+## Built-in Features
+
+ReXApp provides these features out of the box:
+
+### Debug Overlays
+
+- **Console**: Press `` ` `` (backtick) to toggle log console
+- **Debug Overlay**: Performance stats and system info
+- **Settings**: Runtime configuration UI
+
+### Command-Line Processing
+
+ReXApp processes standard command-line arguments:
+
+```bash
+./my_game /path/to/game/data
+```
+
+The first positional argument sets `game_data_root`.
+
+### Logging Integration
+
+All log output is captured and displayed in the console overlay. Use ReXGlue's logging macros:
+
+```cpp
+REXLOG_INFO("Initializing custom system");
+REXLOG_WARN("Resource not found: {}", path);
+REXLOG_ERROR("Failed to load: {}", filename);
+```
+
+## Thread Safety
+
+The PPC module runs on a background thread. ImGui callbacks run on the main thread. Use appropriate synchronization when sharing state:
+
+```cpp
+class MyApp : public rex::ReXApp {
+  std::atomic<int> frame_count_{0};
+  
+  void OnCreateDialogs(ui::ImGuiDrawer* drawer) override {
+    // Called on main thread - safe to add dialogs
+  }
+};
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Runtime Setup" icon="gear" href="/app/runtime-setup">
+    Configure backend systems (graphics, audio, input)
+  </Card>
+  <Card title="Custom Hooks" icon="hook" href="/app/custom-hooks">
+    Customize application behavior with virtual hooks
+  </Card>
+  <Card title="UI Integration" icon="window" href="/app/ui-integration">
+    Add custom ImGui dialogs and overlays
+  </Card>
+</CardGroup>

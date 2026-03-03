@@ -1,0 +1,78 @@
+---
+title: "PathConfig"
+description: "Content path configuration structure"
+---
+
+## Overview
+
+`PathConfig` is a structure that defines the directory paths for game content, user data, and updates. It is passed to the `OnConfigurePaths()` virtual hook in `ReXApp`, allowing subclasses to customize data storage locations before the Runtime is constructed.
+
+## Definition
+
+```cpp
+struct PathConfig {
+  std::filesystem::path game_data_root;
+  std::filesystem::path user_data_root;
+  std::filesystem::path update_data_root;
+};
+```
+
+## Fields
+
+<ParamField path="game_data_root" type="std::filesystem::path">
+  Root directory for read-only game content (assets, original game files)
+</ParamField>
+
+<ParamField path="user_data_root" type="std::filesystem::path">
+  Root directory for user-specific data (save files, settings, profiles)
+</ParamField>
+
+<ParamField path="update_data_root" type="std::filesystem::path">
+  Root directory for game updates and downloadable content
+</ParamField>
+
+## Default Values
+
+All paths start with sensible defaults derived from:
+- Command-line arguments
+- Console variables (cvars)
+- Platform conventions
+
+Subclasses can override any field in the `OnConfigurePaths()` hook before Runtime construction.
+
+## Usage
+
+Override `OnConfigurePaths()` to customize data paths:
+
+```cpp
+class MyApp : public rex::ReXApp {
+protected:
+    void OnConfigurePaths(PathConfig& paths) override {
+        // Use custom locations for user data
+        paths.user_data_root = std::filesystem::path(std::getenv("HOME")) / ".mygame" / "saves";
+        
+        // Keep game data in a specific directory
+        paths.game_data_root = "/opt/mygame/data";
+        
+        // Use default for updates (don't modify update_data_root)
+    }
+};
+```
+
+## Accessing Configured Paths
+
+After configuration, the resolved paths can be accessed through `ReXApp` accessor methods:
+
+```cpp
+void MyApp::OnPostSetup() {
+    auto save_dir = user_data_root() / "savefiles";
+    auto assets_dir = game_data_root() / "textures";
+    
+    // Use the paths...
+}
+```
+
+## See Also
+
+- [rex::ReXApp](/api/rexapp) - Base application class that uses this structure
+- [ReXApp Virtual Hooks](/api/rexapp) - Virtual hook for path customization

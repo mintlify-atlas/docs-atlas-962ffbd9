@@ -1,0 +1,560 @@
+---
+title: XexModule
+description: XEX (Xbox Executable) module loader and runtime representation
+---
+
+The `XexModule` class loads and manages Xbox 360 executable (XEX) files in the ReXGlue runtime. It handles XEX decompression, PE header parsing, import resolution, and provides access to module metadata.
+
+## Class Definition
+
+```cpp
+namespace rex::runtime {
+  class XexModule : public Module;
+}
+```
+
+**Header:** `<rex/system/xex_module.h>`
+
+## Overview
+
+XexModule represents a loaded XEX executable in guest memory. It:
+
+- **Loads XEX files** - Decompresses and loads XEX1/XEX2 format executables
+- **Parses PE headers** - Extracts section information and exports
+- **Resolves imports** - Links against kernel modules (xboxkrnl.xex, xam.xex)
+- **Provides metadata** - Exposes execution info, security info, and optional headers
+
+## Types
+
+### XexFormat
+
+```cpp
+enum XexFormat {
+  kFormatUnknown,
+  kFormatXex1,
+  kFormatXex2
+};
+```
+
+Identifies the XEX file format version.
+
+---
+
+### ImportLibrary
+
+```cpp
+struct ImportLibrary {
+  std::string name;
+  uint32_t id;
+  xe_xex2_version_t version;
+  xe_xex2_version_t min_version;
+  std::vector<ImportLibraryFn> imports;
+};
+```
+
+Represents an imported library (e.g., "xboxkrnl.exe", "xam.xex").
+
+**Fields:**
+- `name` - Library name
+- `id` - Library identifier
+- `version` - Required library version
+- `min_version` - Minimum compatible version
+- `imports` - List of imported functions
+
+---
+
+### ImportLibraryFn
+
+```cpp
+struct ImportLibraryFn {
+  uint32_t ordinal = 0;
+  uint32_t value_address = 0;
+  uint32_t thunk_address = 0;
+};
+```
+
+Represents a single imported function.
+
+**Fields:**
+- `ordinal` - Function ordinal in the import library
+- `value_address` - Guest address where function pointer is stored
+- `thunk_address` - Import thunk address
+
+---
+
+### SecurityInfoContext
+
+```cpp
+struct SecurityInfoContext {
+  const char* rsa_signature;
+  const char* aes_key;
+  uint32_t image_size;
+  uint32_t image_flags;
+  uint32_t export_table;
+  uint32_t load_address;
+  uint32_t page_descriptor_count;
+  const xex2_page_descriptor* page_descriptors;
+};
+```
+
+Extracted XEX security and layout information.
+
+## Constructor & Destructor
+
+### XexModule
+
+```cpp
+XexModule(Processor* processor, system::KernelState* kernel_state);
+```
+
+Constructs a new XEX module loader.
+
+**Parameters:**
+- `processor` - Processor instance for code execution
+- `kernel_state` - Kernel state for object management
+
+---
+
+### ~XexModule
+
+```cpp
+virtual ~XexModule();
+```
+
+Destructs the module and releases allocated memory.
+
+## Loading
+
+### Load
+
+```cpp
+bool Load(const std::string_view name,
+          const std::string_view path,
+          const void* xex_addr,
+          size_t xex_length);
+```
+
+Loads a XEX module from memory.
+
+This method:
+1. Validates the XEX signature (XEX1/XEX2)
+2. Reads and decrypts the XEX headers
+3. Decompresses the executable image (if compressed)
+4. Loads the PE image into guest memory
+
+**Parameters:**
+- `name` - Module name (e.g., "default.xex")
+- `path` - Full virtual path to the module
+- `xex_addr` - Pointer to XEX file data in host memory
+- `xex_length` - Size of XEX file in bytes
+
+**Returns:** `true` if load succeeded, `false` on error.
+
+**Example:**
+```cpp
+// Read XEX from file
+std::vector<uint8_t> xex_data = ReadFile("game:/default.xex");
+
+XexModule module(processor, kernel_state);
+if (module.Load("default.xex", "game:/default.xex",
+                xex_data.data(), xex_data.size())) {
+  // XEX loaded successfully
+}
+```
+
+---
+
+### LoadContinue
+
+```cpp
+bool LoadContinue();
+```
+
+Completes the loading process after `Load()` has succeeded.
+
+This method:
+1. Parses PE headers and sections
+2. Resolves import libraries
+3. Populates binary symbols for debugging
+
+**Returns:** `true` if completion succeeded, `false` on error.
+
+**Note:** Call `Load()` first, then `LoadContinue()` to finish initialization.
+
+---
+
+### Unload
+
+```cpp
+bool Unload();
+```
+
+Unloads the module and releases guest memory.
+
+**Returns:** `true` if unload succeeded, `false` on error.
+
+## Module Properties
+
+### loaded
+
+```cpp
+bool loaded() const;
+```
+
+Returns `true` if the module has been loaded into memory.
+
+---
+
+### name
+
+```cpp
+const std::string& name() const override;
+```
+
+Returns the module name.
+
+---
+
+### base_address
+
+```cpp
+uint32_t base_address() const override;
+```
+
+Returns the base address where the module is loaded in guest memory.
+
+---
+
+### image_size
+
+```cpp
+uint32_t image_size() const override;
+```
+
+Returns the total size of the loaded module image in bytes.
+
+Calculates size from XEX page descriptors:
+
+```cpp
+uint32_t total_size = 0;
+for (uint32_t i = 0; i < xex_security_info()->page_descriptor_count; i++) {
+  xex2_page_descriptor desc;
+  desc.value = byte_swap(xex_security_info()->page_descriptors[i].value);
+  total_size += desc.page_count * heap->page_size();
+}
+```
+
+**Source:** `xex_module.h:72-86`
+
+---
+
+### entry_point
+
+```cpp
+uint32_t entry_point() const override;
+```
+
+Returns the guest address of the module's entry point.
+
+---
+
+### is_executable
+
+```cpp
+bool is_executable() const override;
+```
+
+Returns `true` if this is a title executable (has `XEX_MODULE_TITLE` flag).
+
+---
+
+### is_patch
+
+```cpp
+bool is_patch() const;
+```
+
+Returns `true` if this is a patch module (title update).
+
+---
+
+### is_dev_kit
+
+```cpp
+bool is_dev_kit() const;
+```
+
+Returns `true` if the XEX was signed with a development key.
+
+## XEX Headers
+
+### xex_header
+
+```cpp
+const xex2_header* xex_header() const;
+```
+
+Returns pointer to the XEX header structure.
+
+---
+
+### xex_security_info
+
+```cpp
+const SecurityInfoContext* xex_security_info() const;
+```
+
+Returns pointer to the extracted security information.
+
+---
+
+### GetOptHeader
+
+```cpp
+template <typename T>
+bool GetOptHeader(xex2_header_keys key, T* out_ptr) const;
+```
+
+Retrieves an optional XEX header by key.
+
+**Parameters:**
+- `key` - Header key (e.g., `XEX_HEADER_EXECUTION_INFO`)
+- `out_ptr` - Output parameter receiving header pointer (or value for inline headers)
+
+**Returns:** `true` if header exists, `false` otherwise.
+
+**Example:**
+```cpp
+const xex2_opt_execution_info* exec_info = nullptr;
+if (module.GetOptHeader(XEX_HEADER_EXECUTION_INFO, &exec_info)) {
+  uint32_t media_id = exec_info->media_id;
+  uint32_t title_id = exec_info->title_id;
+}
+```
+
+---
+
+### opt_execution_info
+
+```cpp
+const xex2_opt_execution_info* opt_execution_info() const;
+```
+
+Returns execution info header (title ID, media ID, region, etc.).
+
+---
+
+### opt_file_format_info
+
+```cpp
+const xex2_opt_file_format_info* opt_file_format_info() const;
+```
+
+Returns file format info header (compression type, encryption, etc.).
+
+---
+
+### opt_alternate_title_ids
+
+```cpp
+std::vector<uint32_t> opt_alternate_title_ids() const;
+```
+
+Returns list of alternate title IDs (for DLC compatibility).
+
+## Import Resolution
+
+### import_libraries
+
+```cpp
+const std::vector<ImportLibrary>* import_libraries() const;
+```
+
+Returns the list of imported libraries with their function imports.
+
+**Example:**
+```cpp
+for (const auto& lib : *module.import_libraries()) {
+  printf("Import library: %s\n", lib.name.c_str());
+  for (const auto& fn : lib.imports) {
+    printf("  Ordinal %u at 0x%08X\n", fn.ordinal, fn.value_address);
+  }
+}
+```
+
+## PE Sections
+
+### pe_sections
+
+```cpp
+const std::vector<PESection>& pe_sections() const;
+```
+
+Returns the list of PE sections (`.text`, `.data`, `.rdata`, etc.).
+
+---
+
+### GetPESection
+
+```cpp
+const PESection* GetPESection(const char* name);
+```
+
+Finds a PE section by name.
+
+**Parameters:**
+- `name` - Section name (e.g., ".text")
+
+**Returns:** Pointer to `PESection`, or `nullptr` if not found.
+
+## Export Resolution
+
+### export_table_address
+
+```cpp
+uint32_t export_table_address() const override;
+```
+
+Returns the guest address of the export table.
+
+---
+
+### GetProcAddress (by ordinal)
+
+```cpp
+uint32_t GetProcAddress(uint16_t ordinal) const;
+```
+
+Resolves an exported function by ordinal.
+
+**Parameters:**
+- `ordinal` - Function ordinal
+
+**Returns:** Guest address of the function, or `0` if not found.
+
+---
+
+### GetProcAddress (by name)
+
+```cpp
+uint32_t GetProcAddress(const std::string_view name) const;
+```
+
+Resolves an exported function by name.
+
+**Parameters:**
+- `name` - Function name
+
+**Returns:** Guest address of the function, or `0` if not found.
+
+## Exception Handling
+
+### exception_directory_rva
+
+```cpp
+uint32_t exception_directory_rva() const override;
+```
+
+Returns the RVA of the exception directory (PDATA table).
+
+---
+
+### exception_directory_size
+
+```cpp
+uint32_t exception_directory_size() const override;
+```
+
+Returns the size of the exception directory in bytes.
+
+---
+
+### exception_directory_address
+
+```cpp
+uint32_t exception_directory_address() const override;
+```
+
+Returns the guest address of the exception directory.
+
+## Binary Introspection
+
+### binary_sections
+
+```cpp
+std::span<const BinarySection> binary_sections() const override;
+```
+
+Returns all binary sections for debugging and analysis.
+
+---
+
+### FindSectionByName
+
+```cpp
+const BinarySection* FindSectionByName(std::string_view name) const override;
+```
+
+Finds a binary section by name.
+
+---
+
+### binary_symbols
+
+```cpp
+std::span<const BinarySymbol> binary_symbols() const override;
+```
+
+Returns all binary symbols (functions, data) for debugging.
+
+---
+
+### ContainsAddress
+
+```cpp
+bool ContainsAddress(uint32_t address) override;
+```
+
+Checks if a guest address belongs to this module.
+
+**Parameters:**
+- `address` - Guest virtual address
+
+**Returns:** `true` if address is within module bounds.
+
+## XEX Format Constants
+
+```cpp
+constexpr memory::fourcc_t kXEX1Signature = memory::make_fourcc("XEX1");
+constexpr memory::fourcc_t kXEX2Signature = memory::make_fourcc("XEX2");
+constexpr memory::fourcc_t kElfSignature = memory::make_fourcc(0x7F, 'E', 'L', 'F');
+```
+
+**Source:** `xex_module.h:25-27`
+
+## Usage Example
+
+```cpp
+// Load and launch a XEX executable
+Runtime runtime("/path/to/game");
+runtime.Setup();
+
+// Load the XEX image
+X_STATUS status = runtime.LoadXexImage("game:/default.xex");
+if (XSUCCEEDED(status)) {
+  // Launch the module's main thread
+  auto thread = runtime.LaunchModule();
+  
+  // Access module information
+  auto module = runtime.kernel_state()->GetExecutableModule();
+  printf("Entry point: 0x%08X\n", module->entry_point());
+  printf("Base address: 0x%08X\n", module->base_address());
+  printf("Image size: 0x%08X\n", module->image_size());
+}
+```
+
+## See Also
+
+- [Runtime](/api/runtime) - Load XEX modules through `Runtime::LoadXexImage()`
+- [Module](/api/module) - Base class for all module types
+- [UserModule](/api/user-module) - User-space module wrapper

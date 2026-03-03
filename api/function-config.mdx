@@ -1,0 +1,268 @@
+---
+title: 'FunctionConfig'
+description: 'Per-function configuration and related structures'
+---
+
+## Overview
+
+The `FunctionConfig` structure defines configuration for individual functions and code chunks in the recompiler. Related structures include `MidAsmHook` for injecting custom code, and `SectionInfo`/`FunctionEntry` for analysis output.
+
+## FunctionConfig
+
+Unified configuration for both standalone functions and discontinuous chunks.
+
+```cpp
+namespace rex::codegen {
+  struct FunctionConfig {
+    uint32_t size;
+    uint32_t end;
+    std::string name;
+    uint32_t parent;
+
+    uint32_t getSize(uint32_t address) const;
+    bool isChunk() const;
+  };
+}
+```
+
+### Fields
+
+<ParamField path="size" type="uint32_t" default="0">
+  Explicit function size in bytes. Mutually exclusive with `end`. If both are specified, `size` takes precedence.
+</ParamField>
+
+<ParamField path="end" type="uint32_t" default="0">
+  End address of the function (exclusive). Mutually exclusive with `size`. Used when the function boundary is known by address rather than size.
+</ParamField>
+
+<ParamField path="name" type="std::string" default='""'>
+  Custom symbol name for the function. If empty, auto-generates a name in the format `sub_XXXXXXXX` where X is the hexadecimal address.
+</ParamField>
+
+<ParamField path="parent" type="uint32_t" default="0">
+  Parent function address. Set to 0 for standalone functions. Non-zero indicates this is a discontinuous chunk belonging to the parent function at the specified address.
+</ParamField>
+
+### Methods
+
+#### getSize()
+
+Get the effective size of the function.
+
+```cpp
+uint32_t getSize(uint32_t address) const
+```
+
+<ParamField path="address" type="uint32_t">
+  Starting address of the function.
+</ParamField>
+
+**Returns:** Effective size in bytes. Prefers `size` field if set, otherwise calculates `end - address`.
+
+**Example:**
+```cpp
+FunctionConfig cfg;
+cfg.end = 0x82001000;
+uint32_t sz = cfg.getSize(0x82000800);  // Returns 0x800 (2048 bytes)
+```
+
+#### isChunk()
+
+Check if this configuration represents a discontinuous chunk.
+
+```cpp
+bool isChunk() const
+```
+
+**Returns:** `true` if `parent != 0`, indicating this is a chunk belonging to another function.
+
+**Example:**
+```cpp
+FunctionConfig chunk;
+chunk.parent = 0x82000100;
+if (chunk.isChunk()) {
+  // Handle as chunk of parent function
+}
+```
+
+### Usage in RecompilerConfig
+
+Functions are configured via the `functions` map in `RecompilerConfig`:
+
+```cpp
+RecompilerConfig config;
+
+// Standalone function with explicit size
+FunctionConfig& fn1 = config.functions[0x82000100];
+fn1.name = "GameInit";
+fn1.size = 512;
+
+// Function with end address
+FunctionConfig& fn2 = config.functions[0x82000500];
+fn2.name = "RenderLoop";
+fn2.end = 0x82000800;
+
+// Discontinuous chunk belonging to RenderLoop
+FunctionConfig& chunk = config.functions[0x82002000];
+chunk.parent = 0x82000500;
+chunk.size = 256;
+```
+
+### TOML Configuration
+
+```toml
+[functions.0x82000100]
+name = "GameInit"
+size = 512
+
+[functions.0x82000500]
+name = "RenderLoop"
+end = 0x82000800
+
+[functions.0x82002000]
+parent = 0x82000500
+size = 256
+```
+
+## MidAsmHook
+
+Configuration for injecting custom C++ code at specific instruction addresses.
+
+```cpp
+struct MidAsmHook {
+  std::string name;
+  std::vector<std::string> registers;
+
+  bool ret;
+  bool returnOnTrue;
+  bool returnOnFalse;
+
+  uint32_t jumpAddress;
+  uint32_t jumpAddressOnTrue;
+  uint32_t jumpAddressOnFalse;
+
+  bool afterInstruction;
+};
+```
+
+### Fields
+
+<ParamField path="name" type="std::string">
+  Name of the C++ function to call at this hook point. The function signature should match the register arguments specified.
+</ParamField>
+
+<ParamField path="registers" type="std::vector<std::string>">
+  List of PowerPC registers to pass as arguments to the hook function. Valid values include `"r3"`, `"r4"`, `"f1"`, `"ctx"`, etc.
+</ParamField>
+
+<ParamField path="ret" type="bool" default="false">
+  If `true`, the hook function's return value is used as the function's return value, and execution stops.
+</ParamField>
+
+<ParamField path="returnOnTrue" type="bool" default="false">
+  If `true`, return from the current function when the hook function returns a truthy value.
+</ParamField>
+
+<ParamField path="returnOnFalse" type="bool" default="false">
+  If `true`, return from the current function when the hook function returns a falsy value.
+</ParamField>
+
+<ParamField path="jumpAddress" type="uint32_t" default="0">
+  Unconditional jump target address. If non-zero, execution jumps to this address after the hook executes.
+</ParamField>
+
+<ParamField path="jumpAddressOnTrue" type="uint32_t" default="0">
+  Conditional jump target when hook returns true. If non-zero, jumps to this address when the hook function returns a truthy value.
+</ParamField>
+
+<ParamField path="jumpAddressOnFalse" type="uint32_t" default="0">
+  Conditional jump target when hook returns false. If non-zero, jumps to this address when the hook function returns a falsy value.
+</ParamField>
+
+<ParamField path="afterInstruction" type="bool" default="false">
+  If `true`, execute the hook after the current instruction. If `false`, execute before the instruction.
+</ParamField>
+
+### Example
+
+```cpp
+RecompilerConfig config;
+
+// Hook at 0x82000200 to intercept memory allocation
+MidAsmHook& hook = config.midAsmHooks[0x82000200];
+hook.name = "OnMemoryAlloc";
+hook.registers = {"r3", "r4"};  // size, flags
+hook.returnOnFalse = true;      // return if allocation fails
+```
+
+### TOML Configuration
+
+```toml
+[midAsmHooks.0x82000200]
+name = "OnMemoryAlloc"
+registers = ["r3", "r4"]
+returnOnFalse = true
+
+[midAsmHooks.0x82000400]
+name = "DebugLog"
+registers = ["r3", "r4", "r5"]
+afterInstruction = true
+```
+
+## SectionInfo
+
+Metadata about executable sections for analysis output.
+
+```cpp
+struct SectionInfo {
+  std::string name;
+  uint64_t address;
+  uint64_t size;
+  std::string flags;
+};
+```
+
+<ParamField path="name" type="std::string">
+  Section name (e.g., `.text`, `.data`, `.rdata`).
+</ParamField>
+
+<ParamField path="address" type="uint64_t">
+  Starting address of the section.
+</ParamField>
+
+<ParamField path="size" type="uint64_t">
+  Size of the section in bytes.
+</ParamField>
+
+<ParamField path="flags" type="std::string">
+  Section flags indicating permissions: `"rx"` (read+execute), `"rw"` (read+write), `"r"` (read-only), etc.
+</ParamField>
+
+## FunctionEntry
+
+Function metadata for analysis output.
+
+```cpp
+struct FunctionEntry {
+  uint64_t address;
+  uint64_t size;
+  std::string name;
+};
+```
+
+<ParamField path="address" type="uint64_t">
+  Starting address of the function.
+</ParamField>
+
+<ParamField path="size" type="uint64_t">
+  Size of the function in bytes.
+</ParamField>
+
+<ParamField path="name" type="std::string">
+  Function name. Defaults to `"sub_XXXXXXXX"` if not specified.
+</ParamField>
+
+## See Also
+
+- [RecompilerConfig](/api/recompiler-config) - Main configuration structure
+- [Recompiler](/api/recompiler) - Recompiler class

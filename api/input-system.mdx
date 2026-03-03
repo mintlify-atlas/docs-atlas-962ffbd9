@@ -1,0 +1,302 @@
+---
+title: IInputSystem
+description: Abstract input system interface for controller and input device dependency injection
+---
+
+## Overview
+
+`IInputSystem` is the abstract interface for input subsystems in ReXGlue. It provides dependency injection for different input backends, with SDL as the primary implementation for game controller support.
+
+**Header:** `rex/system/interfaces/input.h`
+
+**Namespace:** `rex::system`
+
+## Interface Methods
+
+### Setup
+
+```cpp
+virtual X_STATUS Setup() = 0;
+```
+
+Initializes the input system and input drivers.
+
+**Returns:** `X_STATUS` - Status code indicating success or failure
+
+### Shutdown
+
+```cpp
+virtual void Shutdown() = 0;
+```
+
+Cleanly shuts down the input system and releases all resources.
+
+## Concrete Implementation
+
+### InputSystem
+
+**Class:** `rex::input::InputSystem`
+
+**Header:** `rex/input/input_system.h`
+
+Input system implementation supporting multiple input drivers.
+
+```cpp
+class InputSystem : public system::IInputSystem {
+public:
+  explicit InputSystem(rex::ui::Window* window);
+  ~InputSystem() override;
+  
+  rex::ui::Window* window() const;
+  
+  X_STATUS Setup() override;
+  void Shutdown() override;
+  
+  void AddDriver(std::unique_ptr<InputDriver> driver);
+  
+  X_RESULT GetCapabilities(
+    uint32_t user_index,
+    uint32_t flags,
+    X_INPUT_CAPABILITIES* out_caps
+  );
+  
+  X_RESULT GetState(
+    uint32_t user_index,
+    X_INPUT_STATE* out_state
+  );
+  
+  X_RESULT SetState(
+    uint32_t user_index,
+    X_INPUT_VIBRATION* vibration
+  );
+  
+  X_RESULT GetKeystroke(
+    uint32_t user_index,
+    uint32_t flags,
+    X_INPUT_KEYSTROKE* out_keystroke
+  );
+};
+```
+
+### SDL Input Driver
+
+**Class:** `rex::input::sdl::SDLInputDriver`
+
+**Header:** `rex/input/sdl/sdl_input_driver.h`
+
+SDL-based input driver providing game controller and keyboard support.
+
+```cpp
+class SDLInputDriver final : public InputDriver {
+public:
+  explicit SDLInputDriver(rex::ui::Window* window, size_t window_z_order);
+  ~SDLInputDriver() override;
+  
+  X_STATUS Setup() override;
+  
+  X_RESULT GetCapabilities(
+    uint32_t user_index,
+    uint32_t flags,
+    X_INPUT_CAPABILITIES* out_caps
+  ) override;
+  
+  X_RESULT GetState(
+    uint32_t user_index,
+    X_INPUT_STATE* out_state
+  ) override;
+  
+  X_RESULT SetState(
+    uint32_t user_index,
+    X_INPUT_VIBRATION* vibration
+  ) override;
+  
+  X_RESULT GetKeystroke(
+    uint32_t user_index,
+    uint32_t flags,
+    X_INPUT_KEYSTROKE* out_keystroke
+  ) override;
+};
+```
+
+**Configuration Constants:**
+- `HID_SDL_USER_COUNT = 4` - Maximum simultaneous users/controllers
+- `HID_SDL_THUMB_THRES = 0x4E00` - Thumbstick deadzone threshold
+- `HID_SDL_TRIGG_THRES = 0x1F` - Trigger activation threshold
+- `HID_SDL_REPEAT_DELAY = 400` - Key repeat delay in milliseconds
+- `HID_SDL_REPEAT_RATE = 100` - Key repeat rate in milliseconds
+
+## Factory Function
+
+```cpp
+std::unique_ptr<InputSystem> CreateDefaultInputSystem(bool tool_mode);
+```
+
+Creates a default `InputSystem` with appropriate drivers:
+- **Normal mode:** SDL driver + NOP driver
+- **Tool mode:** NOP driver only (no physical input)
+
+**Parameters:**
+- `tool_mode` - If true, creates system without SDL driver for headless operation
+
+**Returns:** Configured input system instance
+
+## Example Usage
+
+### Creating Input System
+
+```cpp
+#include <rex/input/input_system.h>
+#include <rex/ui/window.h>
+
+using namespace rex;
+
+// Create default input system
+auto input = input::CreateDefaultInputSystem(false);
+
+// Setup the input system
+X_STATUS status = input->Setup();
+
+if (status != X_STATUS_SUCCESS) {
+  // Handle error
+}
+
+// Use input system...
+
+// Cleanup
+input->Shutdown();
+```
+
+### Manual Input System Creation
+
+```cpp
+#include <rex/input/input_system.h>
+#include <rex/input/sdl/sdl_input_driver.h>
+
+using namespace rex;
+
+// Create input system with window
+auto input = std::make_unique<input::InputSystem>(window);
+
+// Add SDL driver
+auto sdl_driver = std::make_unique<input::sdl::SDLInputDriver>(
+  window,
+  0  // window z-order
+);
+input->AddDriver(std::move(sdl_driver));
+
+// Setup
+input->Setup();
+```
+
+### Reading Controller State
+
+```cpp
+// Get controller capabilities
+X_INPUT_CAPABILITIES caps;
+X_RESULT result = input->GetCapabilities(
+  0,      // user_index (0-3)
+  0,      // flags
+  &caps
+);
+
+if (result == X_ERROR_SUCCESS) {
+  // Check capabilities
+  if (caps.Type == 0x01) {  // Gamepad
+    // Controller is available
+  }
+}
+
+// Get current state
+X_INPUT_STATE state;
+result = input->GetState(0, &state);
+
+if (result == X_ERROR_SUCCESS) {
+  // Process gamepad state
+  auto& gamepad = state.gamepad;
+  
+  if (gamepad.buttons & 0x0010) {  // A button
+    // Handle A button press
+  }
+  
+  // Read analog sticks
+  int16_t left_x = gamepad.thumb_lx;
+  int16_t left_y = gamepad.thumb_ly;
+}
+```
+
+### Setting Controller Vibration
+
+```cpp
+X_INPUT_VIBRATION vibration;
+vibration.left_motor_speed = 32768;   // 50% left motor
+vibration.right_motor_speed = 65535;  // 100% right motor
+
+X_RESULT result = input->SetState(0, &vibration);
+
+if (result == X_ERROR_SUCCESS) {
+  // Vibration applied
+}
+
+// Stop vibration
+vibration.left_motor_speed = 0;
+vibration.right_motor_speed = 0;
+input->SetState(0, &vibration);
+```
+
+### Reading Keystrokes
+
+```cpp
+X_INPUT_KEYSTROKE keystroke;
+X_RESULT result = input->GetKeystroke(
+  0,      // user_index
+  0,      // flags
+  &keystroke
+);
+
+if (result == X_ERROR_SUCCESS) {
+  // Process keystroke
+  if (keystroke.flags & 0x0001) {  // Key down
+    // Handle key down event
+    uint16_t virtual_key = keystroke.virtual_key;
+    uint16_t unicode = keystroke.unicode;
+  }
+}
+```
+
+### Tool Mode (Headless)
+
+```cpp
+// Create input system without SDL for automated testing
+auto input = input::CreateDefaultInputSystem(true);
+
+input->Setup();
+
+// Input calls will return no devices
+X_INPUT_CAPABILITIES caps;
+X_RESULT result = input->GetCapabilities(0, 0, &caps);
+// result == X_ERROR_DEVICE_NOT_CONNECTED
+```
+
+## Multi-User Support
+
+The input system supports up to 4 simultaneous users (controllers):
+
+```cpp
+// Poll all controllers
+for (uint32_t user = 0; user < 4; user++) {
+  X_INPUT_STATE state;
+  X_RESULT result = input->GetState(user, &state);
+  
+  if (result == X_ERROR_SUCCESS) {
+    // Process input for user
+  } else if (result == X_ERROR_DEVICE_NOT_CONNECTED) {
+    // No controller at this index
+  }
+}
+```
+
+## See Also
+
+- [IGraphicsSystem](/api/graphics-system) - Graphics subsystem interface
+- [IAudioSystem](/api/audio-system) - Audio subsystem interface
+- [KernelState](/api/kernel-state) - Kernel state management

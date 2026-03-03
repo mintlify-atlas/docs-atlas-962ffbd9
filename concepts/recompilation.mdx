@@ -1,0 +1,261 @@
+---
+title: Static Recompilation
+description: How ReXGlue translates PowerPC code to native C++ at build time
+---
+
+## Overview
+
+ReXGlue uses **static ahead-of-time (AOT) recompilation** to translate Xbox 360 PowerPC machine code into native C++ source code at build time. Unlike traditional emulators that use dynamic recompilation (JIT) at runtime, ReXGlue produces compilable C++ files that can be optimized by modern compilers.
+
+<Info>
+Static recompilation happens once during build, not at runtime. The output is standard C++ code that compiles to native machine code for maximum performance.
+</Info>
+
+## The Recompilation Pipeline
+
+The recompilation process consists of several stages:
+
+```
+XEX Binary → Analysis → Block Discovery → Code Generation → C++ Files → Native Binary
+```
+
+### Stage 1: Binary Analysis
+
+The `BinaryView` examines the XEX executable to extract:
+- Code sections and data sections
+- Entry points and export tables
+- `.pdata` (exception handling metadata) for function boundaries
+- Relocation information
+
+### Stage 2: Function Discovery
+
+The `FunctionScanner` (source:include/rex/codegen/recompiled_function.h:84) discovers function boundaries using multiple heuristics:
+
+<Note>
+**Function Boundary Detection**
+
+- **Linear sweep** from known entry points
+- **Branch target tracking** to find furthest reachable instruction
+- **Prologue/epilogue patterns** (`mflr`, `stw r0`, `blr` sequences)
+- **pdata information** when available
+- **Jump table detection** for `bctr` switch statements
+</Note>
+
+Each function is decomposed into **basic blocks** (see `DiscoveredBlock` structure in source:include/rex/codegen/recompiled_function.h:47):
+
+```cpp
+struct DiscoveredBlock {
+  rex::guest_addr_t base;       // Start address
+  rex::guest_addr_t end;        // End address (exclusive)
+  bool has_terminator;          // Ends with blr/bctr/branch
+  int64_t projectedSize;        // Size limit for fall-through
+  std::vector<rex::guest_addr_t> successors;  // Branch targets
+};
+```
+
+### Stage 3: Code Generation
+
+The `Recompiler` (source:include/rex/codegen/recompiler.h:67) translates each PowerPC instruction to C++ code:
+
+**Instruction-by-Instruction Translation:**
+```cpp
+bool recompile(const FunctionNode& fn, uint32_t base, 
+               const ppc_insn& insn, const uint32_t* data,
+               std::unordered_map<uint32_t, JumpTable>::iterator& switchTable,
+               RecompilerLocalVariables& localVariables, 
+               CSRState& csrState);
+```
+
+**Local Variable Tracking:**
+
+The `RecompilerLocalVariables` structure (source:include/rex/codegen/recompiler.h:36) tracks which registers need to be declared as local variables:
+
+```cpp
+struct RecompilerLocalVariables {
+  bool ctr{};           // Count register
+  bool xer{};           // Fixed-point exception register
+  bool reserved{};      // Reservation address
+  bool cr[8]{};         // Condition register fields 0-7
+  bool r[32]{};         // General purpose registers
+  bool f[32]{};         // Floating-point registers
+  bool v[128]{};        // Vector registers
+  uint32_t mmio_base_regs{0};  // Tracks MMIO base addresses
+};
+```
+
+**MMIO Optimization:**
+
+The recompiler tracks which GPRs contain memory-mapped I/O base addresses (≥ 0x7F000000):
+
+```cpp
+// Set when lis loads a value with upper 16 bits >= 0x7F00
+// or when oris sets upper bits >= 0xC800
+void set_mmio_base(size_t reg) {
+  if (reg < 32)
+    mmio_base_regs |= (1u << reg);
+}
+```
+
+This allows the recompiler to generate optimized MMIO access code using `PPC_MM_LOAD_U32`/`PPC_MM_STORE_U32` macros.
+
+### Stage 4: Output Generation
+
+Generated C++ functions follow this signature:
+
+```cpp
+void function_82E00000(PPCContext& ctx, uint8_t* base) {
+  PPC_FUNC_PROLOGUE();  // Assert base alignment
+  
+  // Local variable declarations
+  PPCRegister r3, r4, r5;
+  PPCCRRegister cr0;
+  
+  // Translated instructions
+  r3.u32 = PPC_LOAD_U32(ctx.r3.u32);  // lwz r3, 0(r3)
+  r4.u32 = r3.u32 + 0x10;              // addi r4, r3, 0x10
+  cr0.compare(r4.s32, 0, ctx.xer);     // cmpwi cr0, r4, 0
+  
+  if (cr0.eq) {                        // beq target
+    PPC_CALL_INDIRECT_FUNC(0x82E00100);
+  }
+  // ...
+}
+```
+
+## Function Dispatch
+
+Indirect calls (via CTR register) use a **function table** stored in guest memory:
+
+```cpp
+#define PPC_LOOKUP_FUNC(base, addr) \
+  (*(PPCFunc**)(base + PPC_IMAGE_BASE + PPC_IMAGE_SIZE + \
+                (uint64_t(uint32_t(addr) - PPC_CODE_BASE) * 2)))
+
+#define PPC_CALL_INDIRECT_FUNC(addr) \
+  PPC_LOOKUP_FUNC(base, addr)(ctx, base);
+```
+
+<Info>
+The function table is indexed by `(guest_addr - CODE_BASE) * 2`, allowing 8-byte pointers for each 4-byte-aligned instruction. This is initialized by `Memory::InitializeFunctionTable()` (source:include/rex/system/xmemory.h:473).
+</Info>
+
+## Control Flow Handling
+
+### Direct Branches
+
+Unconditional branches compile to direct C++ function calls:
+```cpp
+// b 0x82E00200
+PPC_CALL_FUNC(function_82E00200);
+```
+
+### Conditional Branches
+
+Conditional branches become C++ if statements:
+```cpp
+// bne cr0, 0x82E00200
+if (!cr0.eq) {
+  PPC_CALL_FUNC(function_82E00200);
+}
+```
+
+### Jump Tables
+
+Switch statements via `bctr` are detected and converted to C++ switch:
+
+```cpp
+switch (ctx.ctr.u32) {
+  case 0x82E00100: PPC_CALL_FUNC(function_82E00100); break;
+  case 0x82E00104: PPC_CALL_FUNC(function_82E00104); break;
+  case 0x82E00108: PPC_CALL_FUNC(function_82E00108); break;
+  default: __builtin_debugtrap();
+}
+```
+
+## Validation and Optimization
+
+**Deferred Writes:**
+
+Generated code is buffered until validation passes (source:include/rex/codegen/recompiler.h:78):
+
+```cpp
+std::vector<std::pair<std::string, std::string>> pendingWrites;
+```
+
+The `FlushPendingWrites()` method writes all files to disk only after successful validation.
+
+**Force Mode:**
+
+The `recompile(bool force)` method can bypass validation errors:
+
+```cpp
+bool recompile(bool force);
+```
+
+This is useful for debugging malformed binaries or during development.
+
+## Performance Characteristics
+
+| Metric | Static Recompilation | Dynamic Recompilation (JIT) |
+|--------|---------------------|-----------------------------|
+| Translation time | Build time (one-time) | Runtime overhead |
+| Code quality | Full compiler optimizations | Limited optimization window |
+| Startup time | Instant | Must compile before execution |
+| Memory usage | Zero runtime overhead | JIT cache in memory |
+| Debugging | Source-level with native tools | Requires special JIT debugger |
+
+<Note>
+Static recompilation trades build time for runtime performance. Once compiled, there is **zero translation overhead** at runtime.
+</Note>
+
+## Code Example
+
+Original PowerPC assembly:
+```asm
+; Function at 0x82E00000
+mflr  r0          ; Save link register
+stw   r0, -8(r1)  ; Store to stack
+stwu  r1, -0x10(r1) ; Allocate stack frame
+lis   r3, 0x8300  ; Load high address
+lwz   r4, 0x100(r3) ; Load from memory
+cmpwi cr0, r4, 0  ; Compare with zero
+beq   exit        ; Branch if equal
+addi  r3, r4, 1   ; Increment
+stw   r3, 0x100(r3) ; Store back
+exit:
+addi  r1, r1, 0x10 ; Deallocate stack
+lwz   r0, -8(r1)  ; Restore LR
+mtlr  r0
+blr               ; Return
+```
+
+Generated C++ code:
+```cpp
+PPC_FUNC_IMPL(function_82E00000) {
+  PPC_FUNC_PROLOGUE();
+  
+  PPCRegister r3, r4;
+  PPCCRRegister cr0;
+  
+  // mflr r0 (LR already in ctx.lr)
+  // stw r0, -8(r1) - handled by runtime
+  // stwu r1, -0x10(r1) - stack management
+  
+  r3.u32 = 0x83000000;  // lis r3, 0x8300
+  r4.u32 = PPC_LOAD_U32(r3.u32 + 0x100);  // lwz r4, 0x100(r3)
+  cr0.compare(r4.s32, 0, ctx.xer);  // cmpwi cr0, r4, 0
+  
+  if (!cr0.eq) {  // beq exit
+    r3.u32 = r4.u32 + 1;  // addi r3, r4, 1
+    PPC_STORE_U32(r3.u32 + 0x100, r3.u32);  // stw r3, 0x100(r3)
+  }
+  
+  // Stack cleanup and return handled by caller
+}
+```
+
+## See Also
+
+- [PowerPC Emulation](/concepts/ppc-emulation) - Instruction translation details
+- [Memory Model](/concepts/memory-model) - Address translation and memory layout
+- [Kernel Emulation](/concepts/kernel-emulation) - System call handling

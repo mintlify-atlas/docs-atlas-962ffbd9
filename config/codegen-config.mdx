@@ -1,0 +1,195 @@
+---
+title: Codegen Configuration (TOML)
+description: Complete reference for ReXGlue recompiler TOML configuration
+---
+
+The recompiler is configured via a TOML file that controls code generation behavior, analysis settings, and manual overrides.
+
+## Required Fields
+
+<ParamField path="project_name" type="string" default="rex">
+  Project name used for generated files and namespaces.
+</ParamField>
+
+<ParamField path="file_path" type="string" required>
+  Path to the input XEX or ELF executable file to recompile.
+</ParamField>
+
+<ParamField path="out_directory_path" type="string" default="generated">
+  Output directory for generated C++ source files.
+</ParamField>
+
+## Patch Files (Not Yet Implemented)
+
+<ParamField path="patch_file_path" type="string">
+  Path to binary patch file to apply before analysis.
+</ParamField>
+
+<ParamField path="patch_file_path" type="string">
+  Path to save the patched executable.
+</ParamField>
+
+## Code Generation Options
+
+These flags control register allocation and optimization behavior:
+
+<ParamField path="skip_lr" type="boolean" default={false}>
+  Skip saving/restoring the Link Register (LR) when not modified. Reduces overhead for leaf functions.
+</ParamField>
+
+<ParamField path="skip_msr" type="boolean" default={false}>
+  Skip Machine State Register (MSR) emulation. Use only if the binary doesn't modify MSR.
+</ParamField>
+
+<ParamField path="ctr_as_local" type="boolean" default={false}>
+  Allocate Count Register (CTR) as a local variable instead of state struct field. Improves performance when CTR is used locally.
+</ParamField>
+
+<ParamField path="xer_as_local" type="boolean" default={false}>
+  Allocate XER (Fixed-Point Exception Register) as local variable.
+</ParamField>
+
+<ParamField path="reserved_as_local" type="boolean" default={false}>
+  Allocate reserved registers (r2, r13) as local variables.
+</ParamField>
+
+<ParamField path="cr_as_local" type="boolean" default={false}>
+  Allocate Condition Register fields as local variables.
+</ParamField>
+
+<ParamField path="non_argument_as_local" type="boolean" default={false}>
+  Allocate non-argument registers (r11-r31) as local variables when not used for parameters.
+</ParamField>
+
+<ParamField path="non_volatile_as_local" type="boolean" default={false}>
+  Allocate non-volatile registers (r14-r31) as local variables.
+</ParamField>
+
+<ParamField path="generate_exception_handlers" type="boolean" default={false}>
+  Generate SEH (Structured Exception Handling) wrapper functions for Windows exception handling.
+</ParamField>
+
+## Special Addresses
+
+<ParamField path="longjmp_address" type="uint32" default={0}>
+  Address of `longjmp` function for setjmp/longjmp analysis. Use hex format: `0x82000100`.
+</ParamField>
+
+<ParamField path="setjmp_address" type="uint32" default={0}>
+  Address of `setjmp` function for setjmp/longjmp analysis.
+</ParamField>
+
+## Analysis Section
+
+Fine-tune the analysis pipeline:
+
+```toml
+[analysis]
+max_jump_extension = 65536
+data_region_threshold = 16
+large_function_threshold = 1048576
+exception_handler_funcs = [0x82000200, 0x82000300]
+```
+
+<ParamField path="analysis.max_jump_extension" type="uint32" default={65536}>
+  Maximum bytes to extend function boundaries when jump table targets are found outside initial function size.
+</ParamField>
+
+<ParamField path="analysis.data_region_threshold" type="uint32" default={16}>
+  Number of consecutive invalid instructions before marking region as data (not code). Helps detect embedded constants.
+</ParamField>
+
+<ParamField path="analysis.large_function_threshold" type="uint32" default={1048576}>
+  Size in bytes (1MB default) to warn about unusually large functions. May indicate analysis errors.
+</ParamField>
+
+<ParamField path="analysis.exception_handler_funcs" type="array">
+  Array of exception handler function addresses for code region segmentation.
+  
+  ```toml
+  exception_handler_funcs = [0x82000200, 0x82000300]
+  ```
+</ParamField>
+
+## Invalid Instructions Hints
+
+Mark regions that contain data (not code) to prevent disassembly errors:
+
+```toml
+[[invalid_instructions]]
+data = 0x82001000
+size = 0x40
+
+[[invalid_instructions]]
+data = 0x82002000
+size = 0x10
+```
+
+<ParamField path="invalid_instructions" type="array of tables">
+  Array of data regions that should not be disassembled as code.
+  
+  Each entry requires:
+  - `data` (uint32): Starting address of data region
+  - `size` (uint32): Size of data region in bytes
+</ParamField>
+
+## Indirect Call Hints
+
+Mark `bctr` instructions as indirect calls (vtable dispatch, computed jumps) rather than switch tables:
+
+```toml
+indirect_calls = [0x82000400, 0x82000800]
+```
+
+<ParamField path="indirect_calls" type="array">
+  Array of addresses where `bctr` instructions are vtable/computed calls, not switch table jumps.
+</ParamField>
+
+## Example Configuration
+
+```toml
+project_name = "mygame"
+file_path = "default.xex"
+out_directory_path = "generated"
+
+# Enable optimizations
+skip_lr = true
+ctr_as_local = true
+xer_as_local = true
+cr_as_local = true
+
+# Analysis settings
+[analysis]
+max_jump_extension = 131072  # 128KB
+data_region_threshold = 20
+large_function_threshold = 2097152  # 2MB
+
+# Mark embedded constant table as data
+[[invalid_instructions]]
+data = 0x82100000
+size = 0x1000
+
+# Known indirect calls
+indirect_calls = [0x82000450, 0x82000890]
+
+# Manual function override
+[functions."0x82000100"]
+size = 0x400
+name = "GameInit"
+```
+
+## Validation Rules
+
+The configuration is validated before code generation:
+
+1. **Alignment**: All addresses must be 4-byte aligned (PowerPC instruction size)
+2. **Required fields**: `file_path` must be provided
+3. **No overlaps**: Function boundaries cannot overlap (standalone functions)
+4. **Size constraints**: Cannot specify both `size` and `end` for functions
+5. **End address**: If using `end`, it must be greater than the start address
+
+## See Also
+
+- [Functions Configuration](/config/functions) - Function and chunk definitions
+- [Hooks Configuration](/config/hooks) - Mid-assembly hooks
+- [Overview](/config/overview) - Configuration system overview

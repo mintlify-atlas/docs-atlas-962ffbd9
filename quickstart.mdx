@@ -1,80 +1,504 @@
 ---
-title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+title: Quick Start
+description: Create your first recompiled Xbox 360 project with ReXGlue
 ---
 
-## Get started in three steps
+# Quick Start Guide
 
-Get your documentation site running locally and make your first customization.
-
-### Step 1: Set up your local environment
-
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
-    
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
-    
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
-
-### Step 2: Deploy your changes
-
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
-    
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
-
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
-
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
-
-### Step 3: Go live
-
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
-
-## Next steps
-
-Now that you have your docs running, explore these key features:
-
-<CardGroup cols={2}>
-
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
-
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
-
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
-
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
-
-</CardGroup>
+This guide walks you through creating, configuring, and building your first recompiled Xbox 360 project using ReXGlue.
 
 <Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
+  **Prerequisites**: Make sure you have [installed the ReXGlue SDK](/installation) and have a Clang 18+ toolchain configured.
 </Note>
+
+## Overview
+
+The ReXGlue workflow consists of four main steps:
+
+<Steps>
+  <Step title="Initialize Project">
+    Create a new project structure with `rexglue init`
+  </Step>
+  <Step title="Configure TOML">
+    Configure code generation settings and provide your XEX file
+  </Step>
+  <Step title="Generate Code">
+    Run `rexglue codegen` to analyze and generate C++ code
+  </Step>
+  <Step title="Build Project">
+    Compile the generated code with CMake and run your recompiled executable
+  </Step>
+</Steps>
+
+Let's get started!
+
+## Step 1: Initialize a New Project
+
+Use the `rexglue init` command to create a new project scaffold:
+
+```bash
+rexglue init --app_name my_game --app_root ./my_game
+```
+
+**Available options:**
+
+- `--app_name` (required): Project name (snake_case recommended)
+- `--app_root` (required): Directory where project will be created
+- `--app_desc` (optional): Project description
+- `--app_author` (optional): Your name or organization
+- `--force`: Overwrite existing files if present
+
+Location: `src/rexglue/main.cpp:101-119`
+
+### Generated Project Structure
+
+The init command creates the following structure:
+
+```
+my_game/
+├── CMakeLists.txt              # Build configuration (SDK-managed)
+├── CMakePresets.json           # Platform-specific build presets
+├── my_game_config.toml         # Codegen configuration
+├── src/
+│   └── main.cpp                # Application entry point (SDK-managed)
+└── assets/
+    └── default.xex             # Place your XEX file here
+```
+
+<Warning>
+  **SDK-Managed Files**: `CMakeLists.txt` and `src/main.cpp` are marked as SDK-managed and will be overwritten when running `rexglue migrate`. Put customizations in separate files or use virtual hook overrides.
+</Warning>
+
+### Understanding main.cpp
+
+The generated `main.cpp` creates a minimal ReXApp:
+
+```cpp
+#include "generated/my_game_config.h"
+#include "generated/my_game_init.h"
+#include <rex/rex_app.h>
+
+class MyGameApp : public rex::ReXApp {
+public:
+  using rex::ReXApp::ReXApp;
+
+  static std::unique_ptr<rex::ui::WindowedApp> Create(
+      rex::ui::WindowedAppContext& ctx) {
+    return std::unique_ptr<MyGameApp>(new MyGameApp(ctx, "my_game",
+        {PPC_CODE_BASE, PPC_CODE_SIZE, PPC_IMAGE_BASE,
+         PPC_IMAGE_SIZE, PPCFuncMappings}));
+  }
+};
+
+REX_DEFINE_APP(my_game, MyGameApp::Create)
+```
+
+Location: `src/rexglue/commands/init_command.cpp:109-140`
+
+The `REX_DEFINE_APP` macro provides the platform-specific entry point (WinMain on Windows, main on Linux).
+
+## Step 2: Configure Code Generation
+
+Edit the generated `my_game_config.toml` file to configure code generation:
+
+```toml
+# my_game_config.toml - ReXGlue Codegen Configuration
+
+project_name = "my_game"
+file_path = "assets/default.xex"        # Path to your XEX file
+out_directory_path = "generated"        # Output directory for generated code
+
+# Code generation options (optional)
+skip_lr = false
+generate_exception_handlers = true      # Enable SEH wrappers (Windows)
+max_jump_extension = 65536              # Max bytes for jump table analysis
+data_region_threshold = 16              # Consecutive invalid instructions = data
+
+# Manual function overrides (optional)
+[[functions]]
+address = 0x82000100
+name = "GameMain"
+size = 0x500
+
+[[functions]]
+address = 0x82000200
+name = "RenderLoop"
+end = 0x82000400  # Alternative to size
+
+# Jump table hints for switch statements (optional)
+[[switch_tables]]
+address = 0x82001000
+targets = [0x82001020, 0x82001040, 0x82001060, 0x82001080]
+
+# Mid-assembly hooks (optional, advanced)
+[[mid_asm_hooks]]
+address = 0x82002000
+name = "OnPlayerSpawn"
+registers = ["r3", "r4"]
+ret = true
+```
+
+Location: `src/rexglue/commands/init_command.cpp:142-155`
+
+### Configuration Options Reference
+
+<AccordionGroup>
+  <Accordion title="Required Fields">
+    - `project_name`: Project identifier used for generated file names
+    - `file_path`: Path to Xbox 360 XEX executable (relative or absolute)
+    - `out_directory_path`: Where to write generated C++ files
+  </Accordion>
+
+  <Accordion title="Code Generation Options">
+    - `skip_lr`: Skip link register (LR) tracking (default: false)
+    - `skip_msr`: Skip machine state register (MSR) (default: false)
+    - `ctr_as_local_variable`: Promote CTR to local variable (default: false)
+    - `xer_as_local_variable`: Promote XER to local variable (default: false)
+    - `cr_registers_as_local_variables`: Promote CR fields (default: false)
+    - `non_volatile_registers_as_local_variables`: Promote saved registers (default: false)
+    - `generate_exception_handlers`: Wrap functions in SEH handlers (default: false)
+  </Accordion>
+
+  <Accordion title="Analysis Tuning">
+    - `max_jump_extension`: Max bytes to extend function for jump targets (default: 65536)
+    - `data_region_threshold`: Invalid instruction count to mark data region (default: 16)
+    - `large_function_threshold`: Warn if function exceeds size (default: 1048576)
+  </Accordion>
+
+  <Accordion title="Manual Overrides">
+    **Functions**: Explicitly define function boundaries and names
+    ```toml
+    [[functions]]
+    address = 0x82000100
+    name = "CustomName"   # Optional, defaults to sub_82000100
+    size = 0x500          # Use size OR end, not both
+    # end = 0x82000600    # Exclusive end address
+    # parent = 0x82000000 # For discontinuous chunks
+    ```
+
+    **Switch Tables**: Hint jump table locations
+    ```toml
+    [[switch_tables]]
+    address = 0x82001000
+    targets = [0x82001020, 0x82001040]  # Jump targets
+    ```
+  </Accordion>
+</AccordionGroup>
+
+Configuration structure: `include/rex/codegen/config.h:71-134`
+
+## Step 3: Place Your XEX File
+
+Copy your Xbox 360 executable to the path specified in `file_path`:
+
+```bash
+cp /path/to/your/game.xex my_game/assets/default.xex
+```
+
+<Note>
+  XEX files are Xbox 360 executable format. You'll need to extract these from Xbox 360 game discs or downloads. ReXGlue does not provide these files.
+</Note>
+
+## Step 4: Run Code Generation
+
+Analyze the XEX and generate C++ code:
+
+```bash
+cd my_game
+rexglue codegen my_game_config.toml
+```
+
+**Command options:**
+
+- `--force`: Force regeneration even if output is newer than input
+- `--enable_exception_handlers`: Override TOML setting to enable SEH wrappers
+- `--log_level=<level>`: Set logging verbosity (trace, debug, info, warn, error)
+- `--log_file=<path>`: Write logs to file
+
+Location: `src/rexglue/main.cpp:120-130`
+
+### Generated Output
+
+The codegen command creates:
+
+```
+generated/
+├── my_game_config.h            # Constants (code base, size, etc.)
+├── my_game_init.h              # Function table initialization
+├── my_game_init.cpp            # Function mappings array
+├── sources.cmake               # List of generated files for CMake
+├── sub_82000100.cpp            # Generated function implementations
+├── sub_82000200.cpp
+└── ...
+```
+
+**Example generated function:**
+
+```cpp
+// generated/sub_82000100.cpp
+#include <rex/ppc/context.h>
+#include <rex/ppc/state.h>
+
+void __fastcall sub_82000100(PPCContext* ctx) {
+  // PowerPC: lis r3, 0x8000
+  ctx->r[3] = 0x80000000;
+  
+  // PowerPC: addi r3, r3, 0x100
+  ctx->r[3] = ctx->r[3] + 0x100;
+  
+  // PowerPC: blr
+  return;
+}
+```
+
+<Note>
+  Code generation can take several minutes for large executables. Use `--log_level=debug` to see detailed progress.
+</Note>
+
+## Step 5: Configure CMake
+
+Configure the build using CMake presets:
+
+<CodeGroup>
+```bash Windows Debug
+cmake --preset win-amd64-debug -DREXSDK_DIR=/path/to/rexglue-sdk
+```
+
+```bash Windows Release
+cmake --preset win-amd64-release -DREXSDK_DIR=/path/to/rexglue-sdk
+```
+
+```bash Linux Debug
+cmake --preset linux-amd64-debug -DREXSDK_DIR=/path/to/rexglue-sdk
+```
+
+```bash Linux Release
+cmake --preset linux-amd64-release -DREXSDK_DIR=/path/to/rexglue-sdk
+```
+</CodeGroup>
+
+**SDK Path Options:**
+
+1. **Subdirectory**: Set `REXSDK_DIR` to SDK source tree location
+2. **Installed Package**: Omit `REXSDK_DIR` if SDK is on `CMAKE_PREFIX_PATH`
+
+Location: `src/rexglue/commands/init_command.cpp:47-60`
+
+## Step 6: Build Your Project
+
+Compile the generated code and runtime:
+
+```bash
+# Build using preset
+cmake --build out/build/<preset-name>
+
+# Or use the codegen target to regenerate + build
+cmake --build out/build/<preset-name> --target my_game_codegen
+cmake --build out/build/<preset-name>
+```
+
+The generated `CMakeLists.txt` includes a custom target for regenerating code:
+
+```cmake
+add_custom_target(my_game_codegen
+    COMMAND $<TARGET_FILE:rex::rexglue> codegen ${CMAKE_CURRENT_SOURCE_DIR}/my_game_config.toml
+    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+    COMMENT "Generating recompiled code for my_game"
+    VERBATIM
+)
+```
+
+Location: `src/rexglue/commands/init_command.cpp:96-103`
+
+## Step 7: Run Your Recompiled Game
+
+Run the built executable:
+
+```bash
+# Windows
+out\win-amd64\Debug\my_game.exe
+
+# Linux
+./out/linux-amd64/Debug/my_game
+```
+
+**Runtime command-line flags:**
+
+```bash
+# Enable verbose logging
+my_game --log_level=trace
+
+# Write logs to file
+my_game --log_file=my_game.log
+
+# Graphics backend selection (if both compiled)
+my_game --gpu_backend=vulkan  # or d3d12
+```
+
+## Customizing Your App
+
+Extend the generated `MyGameApp` class to add custom behavior:
+
+```cpp
+// src/my_hooks.cpp
+#include "generated/my_game_config.h"
+#include <rex/rex_app.h>
+
+class MyGameApp : public rex::ReXApp {
+public:
+  using rex::ReXApp::ReXApp;
+
+  // Override initialization
+  bool OnInitialize() override {
+    if (!ReXApp::OnInitialize()) {
+      return false;
+    }
+    
+    // Custom initialization
+    REXLOG_INFO("MyGame initialized!");
+    return true;
+  }
+
+  // Override frame update
+  void OnUpdate(double dt) override {
+    ReXApp::OnUpdate(dt);
+    
+    // Custom per-frame logic
+  }
+
+  static std::unique_ptr<rex::ui::WindowedApp> Create(
+      rex::ui::WindowedAppContext& ctx) {
+    return std::unique_ptr<MyGameApp>(new MyGameApp(ctx, "my_game",
+        {PPC_CODE_BASE, PPC_CODE_SIZE, PPC_IMAGE_BASE,
+         PPC_IMAGE_SIZE, PPCFuncMappings}));
+  }
+};
+
+REX_DEFINE_APP(my_game, MyGameApp::Create)
+```
+
+Then update `CMakeLists.txt` to use your custom main:
+
+```cmake
+set(MY_GAME_SOURCES
+    src/my_hooks.cpp  # Your custom main
+    # src/main.cpp    # Comment out SDK-managed main
+)
+```
+
+## Migrating to New SDK Versions
+
+When updating to a new SDK version, use the migrate command:
+
+```bash
+rexglue migrate --app_root ./my_game
+```
+
+This updates SDK-managed files (CMakeLists.txt, main.cpp) while preserving your configuration and custom code.
+
+Location: `src/rexglue/main.cpp:145-155`
+
+<Warning>
+  Migration overwrites `CMakeLists.txt` and `src/main.cpp`. Back up any customizations first or use custom files as shown above.
+</Warning>
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Codegen fails with 'file not found'">
+    Check that `file_path` in your TOML points to a valid XEX file:
+
+    ```bash
+    ls -lh assets/default.xex
+    ```
+
+    Use absolute paths if relative paths aren't resolving correctly.
+  </Accordion>
+
+  <Accordion title="Build fails with 'GENERATED_SOURCES not found'">
+    You need to run codegen before building:
+
+    ```bash
+    rexglue codegen my_game_config.toml
+    ```
+
+    This creates `generated/sources.cmake` which CMake includes.
+  </Accordion>
+
+  <Accordion title="Runtime crashes immediately">
+    Common causes:
+
+    1. **Missing assets**: Game may need additional data files
+    2. **Invalid function boundaries**: Check TOML function definitions
+    3. **Memory mapping failed**: Check system has enough virtual address space
+
+    Enable debug logging to see details:
+
+    ```bash
+    my_game --log_level=trace --log_file=crash.log
+    ```
+  </Accordion>
+
+  <Accordion title="Game renders incorrectly">
+    Graphics issues may require shader translation fixes or GPU state mapping. This is an active area of development.
+
+    Try:
+    - Different graphics backend (Vulkan vs D3D12)
+    - Enable RenderDoc for frame capture analysis
+    - Report issues on GitHub with screenshots
+  </Accordion>
+</AccordionGroup>
+
+## Example Projects
+
+Study these complete examples to learn more:
+
+<CardGroup cols={2}>
+  <Card
+    title="demo-iruka"
+    icon="github"
+    href="https://github.com/rexglue/demo-iruka"
+  >
+    Simple demonstration project showing basic recompilation
+  </Card>
+  <Card
+    title="reblue"
+    icon="gamepad"
+    href="https://github.com/rexglue/reblue"
+  >
+    Full game recompilation with custom hooks and asset loading
+  </Card>
+</CardGroup>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card
+    title="Configuration Reference"
+    icon="gear"
+    href="/configuration"
+  >
+    Complete TOML configuration options and advanced features
+  </Card>
+  <Card
+    title="API Reference"
+    icon="book"
+    href="/api-reference"
+  >
+    ReXGlue SDK API documentation and runtime hooks
+  </Card>
+  <Card
+    title="Join Discord"
+    icon="discord"
+    href="https://discord.gg/CNTxwSNZfT"
+  >
+    Get help and share your recompiled projects
+  </Card>
+  <Card
+    title="GitHub Issues"
+    icon="bug"
+    href="https://github.com/rexglue/rexglue-sdk/issues"
+  >
+    Report bugs or request features
+  </Card>
+</CardGroup>

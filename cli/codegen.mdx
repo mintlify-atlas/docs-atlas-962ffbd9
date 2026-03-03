@@ -1,0 +1,277 @@
+---
+title: "rexglue codegen"
+description: "Analyze Xbox 360 XEX files and generate recompiled C++ code"
+---
+
+The `codegen` command analyzes Xbox 360 executable files and generates recompiled C++ code, headers, and build integration files.
+
+## Usage
+
+```bash
+rexglue codegen <config.toml> [flags]
+```
+
+## Arguments
+
+<ParamField path="config.toml" type="string" required>
+  Path to TOML configuration file
+  
+  This file specifies the XEX input path, output directory, and codegen options. See [Configuration Reference](/configuration/overview).
+</ParamField>
+
+## Flags
+
+### General Flags
+
+<ParamField path="--force" type="boolean" default="false">
+  Generate output even if validation errors occur
+  
+  By default, codegen aborts if it detects errors during analysis. Use `--force` to generate code anyway (useful for iterative development).
+</ParamField>
+
+<ParamField path="--enable-exception-handlers" type="boolean" default="false">
+  Enable generation of SEH exception handler code
+  
+  Generates code for Structured Exception Handling (SEH) found in the XEX binary.
+</ParamField>
+
+### Output Control
+
+<ParamField path="--functions-per-file" type="uint32" default="500">
+  Number of functions per generated .cpp file
+  
+  Controls file splitting to keep compilation units manageable. Range: 1-100000.
+</ParamField>
+
+<ParamField path="--progress-log-frequency" type="uint32" default="100">
+  Log progress every N functions
+  
+  Controls how often progress messages are logged during code generation. Range: 1-100000.
+</ParamField>
+
+### Analysis Parameters
+
+<ParamField path="--max-discovery-iterations" type="uint32" default="1000">
+  Maximum iterations for function discovery convergence
+  
+  Limits the iterative function discovery process. Range: 1-100000.
+</ParamField>
+
+<ParamField path="--max-vtable-iterations" type="uint32" default="100">
+  Maximum iterations for vtable discovery
+  
+  Limits the C++ vtable discovery process. Range: 1-100000.
+</ParamField>
+
+<ParamField path="--max-resolve-iterations" type="uint32" default="100">
+  Maximum iterations for call target resolution
+  
+  Limits the call graph resolution process. Range: 1-100000.
+</ParamField>
+
+### Exception Handling Limits
+
+<ParamField path="--max-eh-states" type="uint32" default="100">
+  Maximum C++ EH states before rejecting handler
+  
+  Functions with more exception states are skipped. Range: 1-100000.
+</ParamField>
+
+<ParamField path="--max-eh-try-blocks" type="uint32" default="50">
+  Maximum try blocks before rejecting handler
+  
+  Functions with more try blocks are skipped. Range: 1-100000.
+</ParamField>
+
+<ParamField path="--max-eh-ip-map-entries" type="uint32" default="200">
+  Maximum IP-to-state map entries
+  
+  Controls exception handler table size limits. Range: 1-100000.
+</ParamField>
+
+<ParamField path="--max-seh-scope-entries" type="uint32" default="100">
+  Maximum SEH scope table entries
+  
+  Controls SEH handler table size limits. Range: 1-100000.
+</ParamField>
+
+### Jump Table Discovery
+
+<ParamField path="--backward-scan-limit" type="uint32" default="64">
+  Maximum instructions to scan backward for jump table patterns
+  
+  Controls how far to look back when detecting switch/jump tables. Range: 1-10000.
+</ParamField>
+
+<ParamField path="--max-jump-table-entries" type="uint32" default="512">
+  Maximum entries per detected jump table
+  
+  Prevents runaway jump table detection. Range: 1-100000.
+</ParamField>
+
+<ParamField path="--max-blocks-per-function" type="uint32" default="10000">
+  Safety limit on basic blocks per function
+  
+  Prevents analysis of pathologically large functions. Range: 1-1000000.
+</ParamField>
+
+## Examples
+
+### Basic Code Generation
+
+```bash
+rexglue codegen my_game_config.toml
+```
+
+Output:
+```
+ReXGlue v0.1.0 - Xbox 360 Recompilation Toolkit
+Generating code with config: my_game_config.toml
+[Info] Loading XEX file: assets/default.xex
+[Info] Discovered 4523 functions
+[Info] Resolving call targets...
+[Info] Generating C++ code...
+[Info] Writing output files...
+Operation completed successfully in 12.456s
+```
+
+### Enable Exception Handlers
+
+```bash
+rexglue codegen my_game_config.toml --enable-exception-handlers
+```
+
+### Force Generation with Errors
+
+```bash
+rexglue codegen my_game_config.toml --force --log-verbose
+```
+
+### Adjust Output File Size
+
+```bash
+rexglue codegen my_game_config.toml --functions-per-file 250
+```
+
+This generates more (but smaller) `.cpp` files, which can improve parallel compilation.
+
+### Tune Analysis for Large Binaries
+
+```bash
+rexglue codegen my_game_config.toml \
+  --max-discovery-iterations 2000 \
+  --max-blocks-per-function 20000 \
+  --progress-log-frequency 50
+```
+
+## Generated Output
+
+The codegen command generates several types of files in the output directory:
+
+### Configuration Header
+
+```cpp
+// generated/my_game_config.h
+#define PPC_IMAGE_BASE 0x82000000ull
+#define PPC_IMAGE_SIZE 0x01A3C000ull
+#define PPC_CODE_BASE 0x82000200ull
+#define PPC_CODE_SIZE 0x019F4800ull
+```
+
+### Initialization Code
+
+```cpp
+// generated/my_game_init.h
+// Function mapping tables for runtime
+extern const PPCFunctionMapping PPCFuncMappings[];
+```
+
+### Function Implementation Files
+
+```cpp
+// generated/my_game_funcs_0.cpp
+#include "my_game_config.h"
+#include <rex/ppc.h>
+
+PPC_FUNC(sub_82000200) {
+  // Generated recompiled code
+}
+```
+
+### CMake Integration
+
+```cmake
+# generated/sources.cmake
+set(GENERATED_SOURCES
+    generated/my_game_funcs_0.cpp
+    generated/my_game_funcs_1.cpp
+    # ...
+)
+```
+
+## Integration with CMake
+
+After running codegen, rebuild your CMake project to include the generated code:
+
+```bash
+cmake --build out/build/linux-amd64-debug
+```
+
+The generated `sources.cmake` is automatically included by the project's `CMakeLists.txt`.
+
+### Custom Codegen Target
+
+Your project includes a custom CMake target for running codegen:
+
+```bash
+cmake --build out/build/linux-amd64-debug --target my_game_codegen
+```
+
+This runs `rexglue codegen` with the correct paths automatically.
+
+## Common Errors
+
+### Missing Config File
+
+```
+Missing config path. Usage: rexglue codegen <config.toml>
+```
+
+**Solution:** Provide the path to your configuration file.
+
+### XEX File Not Found
+
+```
+Failed to load XEX file: assets/default.xex
+```
+
+**Solution:** Verify the `file_path` in your config matches the actual XEX location.
+
+### Validation Errors
+
+```
+Operation failed: Validation errors detected (took 8.234s)
+```
+
+**Solution:** Check logs for details. Use `--force` to generate code despite errors, or fix the issues in your configuration.
+
+## Performance Tips
+
+1. **Use `--functions-per-file`** to balance compilation parallelism:
+   - Smaller values (250-500): More files, better parallelism, slower linking
+   - Larger values (1000+): Fewer files, slower compilation per file
+
+2. **Enable verbose logging** only when debugging:
+   ```bash
+   rexglue codegen config.toml --log-verbose --log-file codegen.log
+   ```
+
+3. **Tune iteration limits** for very large binaries (>10MB XEX):
+   - Increase `--max-discovery-iterations` if function discovery doesn't converge
+   - Increase `--max-blocks-per-function` if you have very large functions
+
+## Next Steps
+
+- Learn about [Configuration Options](/configuration/overview)
+- Understand [Function Discovery](/concepts/analysis)
+- Read about [Exception Handling](/concepts/exception-handling)

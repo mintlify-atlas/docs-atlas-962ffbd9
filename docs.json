@@ -1,122 +1,138 @@
 {
   "$schema": "https://mintlify.com/docs.json",
-  "theme": "mint",
-  "name": "Mint Starter Kit",
+  "name": "ReXGlue",
+  "theme": "aspen",
   "colors": {
-    "primary": "#16A34A",
-    "light": "#07C983",
-    "dark": "#15803D"
+    "primary": "#52B043",
+    "light": "#6FCF5E",
+    "dark": "#3D9432"
   },
-  "favicon": "/favicon.svg",
+  "navbar": {
+    "primary": {
+      "type": "github",
+      "href": "https://github.com/rexglue/rexglue-sdk"
+    }
+  },
+  "footer": {
+    "socials": {
+      "github": "https://github.com/rexglue/rexglue-sdk"
+    }
+  },
   "navigation": {
     "tabs": [
       {
-        "tab": "Guides",
+        "tab": "Documentation",
         "groups": [
           {
-            "group": "Getting started",
+            "group": "Get Started",
             "pages": [
-              "index",
-              "quickstart",
-              "development"
+              "introduction",
+              "architecture",
+              "installation",
+              "quickstart"
             ]
           },
           {
-            "group": "Customization",
+            "group": "CLI Reference",
             "pages": [
-              "essentials/settings",
-              "essentials/navigation"
+              "cli/overview",
+              "cli/init",
+              "cli/codegen",
+              "cli/migrate",
+              "cli/recompile-tests"
             ]
           },
           {
-            "group": "Writing content",
+            "group": "Configuration",
             "pages": [
-              "essentials/markdown",
-              "essentials/code",
-              "essentials/images",
-              "essentials/reusable-snippets"
+              "config/overview",
+              "config/project-config",
+              "config/codegen-config",
+              "config/functions",
+              "config/hooks"
             ]
           },
           {
-            "group": "AI tools",
+            "group": "Core Concepts",
             "pages": [
-              "ai-tools/cursor",
-              "ai-tools/claude-code",
-              "ai-tools/windsurf"
+              "concepts/recompilation",
+              "concepts/ppc-emulation",
+              "concepts/memory-model",
+              "concepts/kernel-emulation"
+            ]
+          },
+          {
+            "group": "Application Development",
+            "pages": [
+              "app/rexapp",
+              "app/runtime-setup",
+              "app/custom-hooks",
+              "app/ui-integration"
+            ]
+          },
+          {
+            "group": "Advanced",
+            "pages": [
+              "advanced/exception-handlers",
+              "advanced/debugging",
+              "advanced/optimization",
+              "advanced/platform-support"
             ]
           }
         ]
       },
       {
-        "tab": "API reference",
+        "tab": "API Reference",
         "groups": [
           {
-            "group": "API documentation",
+            "group": "Runtime",
             "pages": [
-              "api-reference/introduction"
+              "api/runtime",
+              "api/runtime-config"
             ]
           },
           {
-            "group": "Endpoint examples",
+            "group": "Application",
             "pages": [
-              "api-reference/endpoint/get",
-              "api-reference/endpoint/create",
-              "api-reference/endpoint/delete",
-              "api-reference/endpoint/webhook"
+              "api/rexapp",
+              "api/ppc-image-info",
+              "api/path-config"
+            ]
+          },
+          {
+            "group": "Codegen",
+            "pages": [
+              "api/recompiler",
+              "api/recompiler-config",
+              "api/function-config"
+            ]
+          },
+          {
+            "group": "Subsystems",
+            "pages": [
+              "api/graphics-system",
+              "api/audio-system",
+              "api/input-system",
+              "api/kernel-state"
+            ]
+          },
+          {
+            "group": "Memory & Threading",
+            "pages": [
+              "api/memory",
+              "api/processor",
+              "api/thread"
+            ]
+          },
+          {
+            "group": "Filesystem",
+            "pages": [
+              "api/vfs",
+              "api/xex-module"
             ]
           }
         ]
       }
-    ],
-    "global": {
-      "anchors": [
-        {
-          "anchor": "Documentation",
-          "href": "https://mintlify.com/docs",
-          "icon": "book-open-cover"
-        },
-        {
-          "anchor": "Blog",
-          "href": "https://mintlify.com/blog",
-          "icon": "newspaper"
-        }
-      ]
-    }
-  },
-  "logo": {
-    "light": "/logo/light.svg",
-    "dark": "/logo/dark.svg"
-  },
-  "navbar": {
-    "links": [
-      {
-        "label": "Support",
-        "href": "mailto:hi@mintlify.com"
-      }
-    ],
-    "primary": {
-      "type": "button",
-      "label": "Dashboard",
-      "href": "https://dashboard.mintlify.com"
-    }
-  },
-  "contextual": {
-    "options": [
-     "copy",
-     "view",
-     "chatgpt",
-     "claude",
-     "perplexity",
-     "mcp",
-     "cursor",
-     "vscode"
-   ]
-  },
-  "footer": {
-    "socials": {
-      "x": "https://x.com/mintlify",
-      "github": "https://github.com/mintlify",
-      "linkedin": "https://linkedin.com/company/mintlify"
-    }
+    ]
   }
 }

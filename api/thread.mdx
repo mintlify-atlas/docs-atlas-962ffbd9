@@ -1,0 +1,633 @@
+---
+title: 'rex::system::XThread'
+description: 'Xbox 360 guest thread creation and management'
+---
+
+## Overview
+
+The `XThread` class represents an Xbox 360 guest thread, managing thread state, execution, APCs (Asynchronous Procedure Calls), priority, and affinity.
+
+<Note>
+Thread stacks are allocated in the guest address range `0x70000000` to `0x7F000000`.
+</Note>
+
+## Class Definition
+
+```cpp
+namespace rex::system {
+  class XThread : public XObject;
+}
+```
+
+## Construction
+
+### XThread()
+
+Constructs a new guest thread.
+
+```cpp
+XThread(KernelState* kernel_state);
+
+XThread(KernelState* kernel_state, uint32_t stack_size, 
+        uint32_t xapi_thread_startup, uint32_t start_address,
+        uint32_t start_context, uint32_t creation_flags,
+        bool guest_thread, bool main_thread = false);
+```
+
+**Parameters**:
+- `kernel_state` - Pointer to the kernel state
+- `stack_size` - Size of thread stack in bytes
+- `xapi_thread_startup` - Guest address of XAPI startup routine
+- `start_address` - Guest address of thread entry point
+- `start_context` - Context parameter passed to thread
+- `creation_flags` - Thread creation flags (see `X_CREATE_SUSPENDED`)
+- `guest_thread` - `true` if created by guest code
+- `main_thread` - `true` if this is the main entry point thread
+
+## Thread Lifecycle
+
+### Create()
+
+Creates and initializes the thread.
+
+```cpp
+X_STATUS Create();
+```
+
+**Returns**: Status code (`X_STATUS_SUCCESS` on success)
+
+### Execute()
+
+Begins thread execution.
+
+```cpp
+virtual void Execute();
+```
+
+This method runs the thread's entry point function. Override in derived classes for custom behavior.
+
+### Exit()
+
+Exits the thread with an exit code.
+
+```cpp
+X_STATUS Exit(int exit_code);
+```
+
+**Parameters**:
+- `exit_code` - Thread exit code
+
+**Returns**: Status code
+
+### Terminate()
+
+Forcibly terminates the thread.
+
+```cpp
+X_STATUS Terminate(int exit_code);
+```
+
+**Parameters**:
+- `exit_code` - Thread exit code
+
+**Returns**: Status code
+
+### Reenter()
+
+Re-enters thread execution at a specific address.
+
+```cpp
+virtual void Reenter(uint32_t address);
+```
+
+**Parameters**:
+- `address` - Guest address to resume execution
+
+## Thread Control
+
+### Suspend()
+
+Suspends the thread.
+
+```cpp
+X_STATUS Suspend(uint32_t* out_suspend_count = nullptr);
+```
+
+**Parameters**:
+- `out_suspend_count` - Optional pointer to receive previous suspend count
+
+**Returns**: Status code
+
+### Resume()
+
+Resumes the thread.
+
+```cpp
+X_STATUS Resume(uint32_t* out_suspend_count = nullptr);
+```
+
+**Parameters**:
+- `out_suspend_count` - Optional pointer to receive previous suspend count
+
+**Returns**: Status code
+
+### Delay()
+
+Delays thread execution for a specified interval.
+
+```cpp
+X_STATUS Delay(uint32_t processor_mode, uint32_t alertable, uint64_t interval);
+```
+
+**Parameters**:
+- `processor_mode` - Processor mode (user/kernel)
+- `alertable` - Whether the delay is alertable for APCs
+- `interval` - Delay interval in 100-nanosecond units
+
+**Returns**: Status code
+
+## Priority and Affinity
+
+### SetPriority()
+
+Sets the thread priority.
+
+```cpp
+void SetPriority(int32_t increment);
+```
+
+**Parameters**:
+- `increment` - Priority increment value
+
+### QueryPriority()
+
+Queries the current thread priority.
+
+```cpp
+int32_t QueryPriority();
+```
+
+**Returns**: Current priority value
+
+### priority()
+
+Gets the thread priority.
+
+```cpp
+int32_t priority() const;
+```
+
+**Returns**: Priority value
+
+### SetAffinity()
+
+Sets the processor affinity mask.
+
+```cpp
+void SetAffinity(uint32_t affinity);
+```
+
+**Parameters**:
+- `affinity` - Processor affinity bitmask
+
+<Note>
+Xbox 360 has 3 cores with 2 hardware threads each:
+- Thread 0-1: Core 0
+- Thread 2-3: Core 1 (sometimes XContent)
+- Thread 4-5: Core 2 (often XAudio)
+</Note>
+
+### SetActiveCpu()
+
+Sets the active CPU for the thread.
+
+```cpp
+void SetActiveCpu(uint8_t cpu_index);
+```
+
+**Parameters**:
+- `cpu_index` - CPU index (0-5)
+
+### active_cpu()
+
+Gets the active CPU index.
+
+```cpp
+uint8_t active_cpu() const;
+```
+
+**Returns**: Active CPU index
+
+## Critical Regions and IRQL
+
+### EnterCriticalRegion()
+
+Enters a critical region (disables APCs).
+
+```cpp
+void EnterCriticalRegion();
+```
+
+### LeaveCriticalRegion()
+
+Leaves a critical region (re-enables APCs).
+
+```cpp
+void LeaveCriticalRegion();
+```
+
+### RaiseIrql()
+
+Raises the thread's IRQL.
+
+```cpp
+uint32_t RaiseIrql(uint32_t new_irql);
+```
+
+**Parameters**:
+- `new_irql` - New IRQL level
+
+**Returns**: Previous IRQL value
+
+### LowerIrql()
+
+Lowers the thread's IRQL.
+
+```cpp
+void LowerIrql(uint32_t new_irql);
+```
+
+**Parameters**:
+- `new_irql` - IRQL level to lower to
+
+## Asynchronous Procedure Calls (APCs)
+
+### EnqueueApc()
+
+Enqueues an APC for execution on this thread.
+
+```cpp
+void EnqueueApc(uint32_t normal_routine, uint32_t normal_context,
+                uint32_t arg1, uint32_t arg2);
+```
+
+**Parameters**:
+- `normal_routine` - Guest address of APC routine
+- `normal_context` - Context parameter
+- `arg1` - First argument
+- `arg2` - Second argument
+
+### CheckApcs()
+
+Checks and delivers pending APCs.
+
+```cpp
+void CheckApcs();
+```
+
+### LockApc()
+
+Locks the APC queue.
+
+```cpp
+void LockApc();
+```
+
+### UnlockApc()
+
+Unlocks the APC queue.
+
+```cpp
+void UnlockApc(bool queue_delivery);
+```
+
+**Parameters**:
+- `queue_delivery` - Whether to queue APC delivery after unlocking
+
+### apc_list()
+
+Gets the APC list.
+
+```cpp
+util::NativeList* apc_list();
+```
+
+**Returns**: Pointer to the APC list
+
+## Thread Local Storage (TLS)
+
+### GetTLSValue()
+
+Gets a TLS value.
+
+```cpp
+bool GetTLSValue(uint32_t slot, uint32_t* value_out);
+```
+
+**Parameters**:
+- `slot` - TLS slot index
+- `value_out` - Pointer to receive the value
+
+**Returns**: `true` on success
+
+### SetTLSValue()
+
+Sets a TLS value.
+
+```cpp
+bool SetTLSValue(uint32_t slot, uint32_t value);
+```
+
+**Parameters**:
+- `slot` - TLS slot index
+- `value` - Value to set
+
+**Returns**: `true` on success
+
+### tls_ptr()
+
+Gets the TLS base address.
+
+```cpp
+uint32_t tls_ptr() const;
+```
+
+**Returns**: Guest address of TLS block
+
+## Current Thread Access
+
+### GetCurrentThread()
+
+Gets the currently executing XThread.
+
+```cpp
+static XThread* GetCurrentThread();
+```
+
+**Returns**: Pointer to current thread, or `nullptr`
+
+### GetCurrentThreadHandle()
+
+Gets the current thread's handle.
+
+```cpp
+static uint32_t GetCurrentThreadHandle();
+```
+
+**Returns**: Current thread handle
+
+### GetCurrentThreadId()
+
+Gets the current thread's ID.
+
+```cpp
+static uint32_t GetCurrentThreadId();
+```
+
+**Returns**: Current thread ID
+
+### IsInThread()
+
+Checks if code is executing in a specific thread.
+
+```cpp
+static bool IsInThread(XThread* other);
+static bool IsInThread();
+```
+
+**Parameters**:
+- `other` - Thread to check against
+
+**Returns**: `true` if in the specified thread
+
+## Error Handling
+
+### GetLastError()
+
+Gets the last error code for the current thread.
+
+```cpp
+static uint32_t GetLastError();
+```
+
+**Returns**: Last error code
+
+### SetLastError()
+
+Sets the last error code for the current thread.
+
+```cpp
+static void SetLastError(uint32_t error_code);
+```
+
+**Parameters**:
+- `error_code` - Error code to set
+
+### last_error()
+
+Gets the thread's last error code.
+
+```cpp
+uint32_t last_error();
+```
+
+**Returns**: Last error code
+
+### set_last_error()
+
+Sets the thread's last error code.
+
+```cpp
+void set_last_error(uint32_t error_code);
+```
+
+**Parameters**:
+- `error_code` - Error code to set
+
+## Properties
+
+### thread_id()
+
+Gets the thread ID.
+
+```cpp
+uint32_t thread_id() const;
+```
+
+**Returns**: Thread ID
+
+### pcr_ptr()
+
+Gets the Processor Control Region (PCR) address.
+
+```cpp
+uint32_t pcr_ptr() const;
+```
+
+**Returns**: Guest address of PCR
+
+### is_guest_thread()
+
+Checks if the thread was created by guest code.
+
+```cpp
+bool is_guest_thread() const;
+```
+
+**Returns**: `true` if created by guest
+
+### main_thread()
+
+Checks if this is the main entry point thread.
+
+```cpp
+bool main_thread() const;
+```
+
+**Returns**: `true` if main thread
+
+### is_running()
+
+Checks if the thread is running.
+
+```cpp
+bool is_running() const;
+```
+
+**Returns**: `true` if running
+
+### creation_params()
+
+Gets the thread creation parameters.
+
+```cpp
+const CreationParams* creation_params() const;
+```
+
+**Returns**: Pointer to creation parameters
+
+### suspend_count()
+
+Gets the thread suspend count.
+
+```cpp
+uint32_t suspend_count();
+```
+
+**Returns**: Current suspend count
+
+### set_name()
+
+Sets the thread name.
+
+```cpp
+void set_name(const std::string_view name);
+```
+
+**Parameters**:
+- `name` - Thread name
+
+### thread()
+
+Gets the underlying host thread.
+
+```cpp
+rex::thread::Thread* thread();
+```
+
+**Returns**: Pointer to host thread
+
+### thread_state()
+
+Gets the PowerPC thread state.
+
+```cpp
+runtime::ThreadState* thread_state();
+```
+
+**Returns**: Pointer to thread state (registers, etc.)
+
+## State Management
+
+### Save()
+
+Saves thread state to a byte stream.
+
+```cpp
+virtual bool Save(stream::ByteStream* stream) override;
+```
+
+**Parameters**:
+- `stream` - Byte stream to write to
+
+**Returns**: `true` on success
+
+### Restore()
+
+Restores thread state from a byte stream.
+
+```cpp
+static object_ref<XThread> Restore(KernelState* kernel_state, 
+                                    stream::ByteStream* stream);
+```
+
+**Parameters**:
+- `kernel_state` - Kernel state pointer
+- `stream` - Byte stream to read from
+
+**Returns**: Restored thread object
+
+## Constants
+
+### Stack Address Range
+
+```cpp
+static constexpr uint32_t kStackAddressRangeBegin = 0x70000000;
+static constexpr uint32_t kStackAddressRangeEnd = 0x7F000000;
+```
+
+### Creation Flags
+
+```cpp
+constexpr uint32_t X_CREATE_SUSPENDED = 0x00000001;
+constexpr uint32_t X_TLS_OUT_OF_INDEXES = UINT32_MAX;
+```
+
+## Related Types
+
+### CreationParams
+
+Thread creation parameters:
+
+```cpp
+struct CreationParams {
+  uint32_t stack_size;
+  uint32_t xapi_thread_startup;
+  uint32_t start_address;
+  uint32_t start_context;
+  uint32_t creation_flags;
+};
+```
+
+### X_KPCR
+
+Processor Control Region structure (mapped in guest memory):
+
+```cpp
+struct X_KPCR {
+  rex::be<uint32_t> tls_ptr;         // 0x0
+  rex::be<uint32_t> pcr_ptr;         // 0x30
+  rex::be<uint32_t> stack_base_ptr;  // 0x70
+  rex::be<uint32_t> stack_end_ptr;   // 0x74
+  rex::be<uint32_t> current_thread;  // 0x100
+  uint8_t current_cpu;               // 0x10C
+  rex::be<uint32_t> dpc_active;      // 0x150
+  // ... (see source for full structure)
+};
+```
+
+## See Also
+
+- [Processor](/api/processor) - CPU emulation and execution
+- [Memory](/api/memory) - Memory subsystem
+- `rex::thread::Thread` - Host threading primitives

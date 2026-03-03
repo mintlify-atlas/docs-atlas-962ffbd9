@@ -1,0 +1,204 @@
+---
+title: IAudioSystem
+description: Abstract audio system interface for audio pipeline dependency injection
+---
+
+## Overview
+
+`IAudioSystem` is the abstract interface for audio subsystems in ReXGlue. It provides dependency injection for different audio backends, with SDL as the primary implementation.
+
+**Header:** `rex/system/interfaces/audio.h`
+
+**Namespace:** `rex::system`
+
+## Interface Methods
+
+### Setup
+
+```cpp
+virtual X_STATUS Setup(KernelState* kernel_state) = 0;
+```
+
+Initializes the audio system with the kernel state.
+
+**Parameters:**
+- `kernel_state` - Pointer to the kernel state manager
+
+**Returns:** `X_STATUS` - Status code indicating success or failure
+
+### Shutdown
+
+```cpp
+virtual void Shutdown() = 0;
+```
+
+Cleanly shuts down the audio system and releases all resources.
+
+## Concrete Implementation
+
+### SDL Audio System
+
+**Class:** `rex::audio::sdl::SDLAudioSystem`
+
+**Header:** `rex/audio/sdl/sdl_audio_system.h`
+
+SDL-based audio implementation providing cross-platform audio support.
+
+```cpp
+class SDLAudioSystem : public AudioSystem {
+public:
+  explicit SDLAudioSystem(runtime::Processor* processor);
+  ~SDLAudioSystem() override;
+  
+  static bool IsAvailable() { return true; }
+  
+  static std::unique_ptr<AudioSystem> Create(runtime::Processor* processor);
+  
+  X_STATUS CreateDriver(
+    size_t index,
+    rex::thread::Semaphore* semaphore,
+    AudioDriver** out_driver
+  ) override;
+  
+  void DestroyDriver(AudioDriver* driver) override;
+  
+protected:
+  void Initialize() override;
+};
+```
+
+## Base AudioSystem Class
+
+The SDL implementation extends `rex::audio::AudioSystem`, which provides:
+
+**Key Members:**
+- `memory()` - Access to memory subsystem
+- `processor()` - Access to CPU processor
+- `xma_decoder()` - XMA audio decoder instance
+
+**Key Methods:**
+- `Setup(kernel_state)` - Initialize audio system
+- `Shutdown()` - Shutdown audio system
+- `RegisterClient(callback, callback_arg, out_index)` - Register audio client
+- `UnregisterClient(index)` - Unregister audio client
+- `SubmitFrame(index, samples_ptr)` - Submit audio frame for playback
+- `Pause()` / `Resume()` - Pause and resume audio playback
+- `Save(stream)` / `Restore(stream)` - Save and restore state
+
+**Constants:**
+- `kMaximumClientCount = 8` - Maximum number of simultaneous audio clients
+
+## Example Usage
+
+### Initializing SDL Audio System
+
+```cpp
+#include <rex/audio/sdl/sdl_audio_system.h>
+#include <rex/system/kernel_state.h>
+#include <rex/runtime/processor.h>
+
+using namespace rex;
+
+// Check availability
+if (!audio::sdl::SDLAudioSystem::IsAvailable()) {
+  // Handle unavailable audio
+  return;
+}
+
+// Create the audio system
+auto audio = audio::sdl::SDLAudioSystem::Create(processor);
+
+// Setup with kernel state
+X_STATUS status = audio->Setup(kernel_state);
+
+if (status != X_STATUS_SUCCESS) {
+  // Handle error
+}
+
+// Use the audio system...
+
+// Cleanup
+audio->Shutdown();
+```
+
+### Registering an Audio Client
+
+```cpp
+// Audio client callback
+void AudioCallback(uint32_t arg) {
+  // Handle audio callback
+}
+
+// Register client
+size_t client_index;
+X_STATUS status = audio->RegisterClient(
+  reinterpret_cast<uint32_t>(&AudioCallback),
+  user_data,
+  &client_index
+);
+
+if (status == X_STATUS_SUCCESS) {
+  // Submit audio frames
+  audio->SubmitFrame(client_index, samples_ptr);
+  
+  // Later, unregister when done
+  audio->UnregisterClient(client_index);
+}
+```
+
+### Pausing and Resuming Audio
+
+```cpp
+// Pause audio playback
+if (!audio->is_paused()) {
+  audio->Pause();
+}
+
+// Resume audio playback
+if (audio->is_paused()) {
+  audio->Resume();
+}
+```
+
+### Using XMA Decoder
+
+```cpp
+// Access XMA decoder for compressed audio
+auto* xma = audio->xma_decoder();
+
+// Use XMA decoder for Xbox 360 audio format decoding
+// ...
+```
+
+## Audio Driver Interface
+
+The audio system creates and manages `AudioDriver` instances for each client:
+
+```cpp
+// Create driver for client
+AudioDriver* driver = nullptr;
+auto semaphore = std::make_unique<rex::thread::Semaphore>();
+
+X_STATUS status = audio->CreateDriver(
+  client_index,
+  semaphore.get(),
+  &driver
+);
+
+if (status == X_STATUS_SUCCESS) {
+  // Use driver...
+  
+  // Destroy when done
+  audio->DestroyDriver(driver);
+}
+```
+
+## Thread Safety
+
+The audio system uses `rex::thread::global_critical_region` for thread-safe access to client management and audio frame submission.
+
+## See Also
+
+- [KernelState](/api/kernel-state) - Kernel state management
+- [IGraphicsSystem](/api/graphics-system) - Graphics subsystem interface
+- [IInputSystem](/api/input-system) - Input subsystem interface

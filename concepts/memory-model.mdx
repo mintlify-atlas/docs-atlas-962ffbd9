@@ -1,0 +1,453 @@
+---
+title: Virtual Memory Layout
+description: Xbox 360 memory architecture and ReXGlue's address translation system
+---
+
+## Overview
+
+The Xbox 360 uses a **4GB virtual address space** with a complex memory layout involving multiple heaps, page sizes, and memory-mapped regions. ReXGlue emulates this layout by mapping guest addresses into the host process's address space.
+
+## Virtual Address Space Layout
+
+The Xbox 360 memory map (source:include/rex/system/xmemory.h:286):
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│ 0x00000000 - 0x3FFFFFFF  Virtual Heap (1GB)                 │  4KB pages
+│                          - Game allocations                  │
+│                          - XEX image loaded here             │
+├──────────────────────────────────────────────────────────────┤
+│ 0x40000000 - 0x7EFFFFFF  Virtual Heap (1GB - 16MB)          │  64KB pages
+│                          - Rarely used                       │
+├──────────────────────────────────────────────────────────────┤
+│ 0x7F000000 - 0x7FFFFFFF  MMIO Range (16MB)                  │  Hardware I/O
+│                          - GPU registers (0x7FC80000)        │
+│                          - Audio, video, etc.                │
+├──────────────────────────────────────────────────────────────┤
+│ 0x80000000 - 0x8FFFFFFF  XEX Heap (256MB)                   │  64KB pages
+│                          - Executable images                 │
+├──────────────────────────────────────────────────────────────┤
+│ 0x90000000 - 0x9FFFFFFF  System Virtual Heap (256MB)        │  64KB pages
+│                          - Kernel allocations                │
+├──────────────────────────────────────────────────────────────┤
+│ 0xA0000000 - 0xBFFFFFFF  Physical Heap (512MB)              │  64KB pages
+│                          - Direct physical memory access     │
+├──────────────────────────────────────────────────────────────┤
+│ 0xC0000000 - 0xDFFFFFFF  Physical Heap (512MB)              │  16MB pages
+│                          - Large page allocations            │
+├──────────────────────────────────────────────────────────────┤
+│ 0xE0000000 - 0xFFFFFFFF  Physical Heap (512MB)              │  4KB pages
+│                          - Small page allocations            │
+└──────────────────────────────────────────────────────────────┘
+```
+
+<Info>
+The Xbox 360 has **512MB of physical RAM**, but the virtual address space is **4GB**. Virtual heaps are backed by physical memory through the page table.
+</Info>
+
+## Memory Class
+
+The `Memory` class (source:include/rex/system/xmemory.h:286) manages the entire guest memory system:
+
+```cpp
+class Memory {
+public:
+  bool Initialize();  // Set up memory-mapped file and heaps
+  void Reset();       // Zero all memory and reset allocations
+  
+  // Address Translation
+  template <typename T = uint8_t*>
+  inline T TranslateVirtual(uint32_t guest_address) const {
+    uint8_t* host_address = virtual_membase_ + guest_address;
+    const auto heap = LookupHeap(guest_address);
+    if (heap) {
+      host_address += heap->host_address_offset();
+    }
+    return reinterpret_cast<T>(host_address);
+  }
+  
+  template <typename T = uint8_t*>
+  inline T TranslatePhysical(uint32_t guest_address) const {
+    return reinterpret_cast<T>(physical_membase_ + (guest_address & 0x1FFFFFFF));
+  }
+  
+  uint32_t HostToGuestVirtual(const void* host_address) const;
+  uint32_t GetPhysicalAddress(uint32_t virtual_address) const;
+  
+  // Memory Operations
+  void Zero(uint32_t address, uint32_t size);
+  void Fill(uint32_t address, uint32_t size, uint8_t value);
+  void Copy(uint32_t dest, uint32_t src, uint32_t size);
+  
+  // System Heap (kernel allocations)
+  uint32_t SystemHeapAlloc(uint32_t size, uint32_t alignment = 0x20);
+  void SystemHeapFree(uint32_t address);
+  
+private:
+  std::filesystem::path file_name_;  // Memory-mapped file path
+  uint8_t* virtual_membase_ = nullptr;   // Host base for virtual memory
+  uint8_t* physical_membase_ = nullptr;  // Host base for physical memory
+  
+  struct {
+    VirtualHeap v00000000;  // 0x00000000 - 4KB pages
+    VirtualHeap v40000000;  // 0x40000000 - 64KB pages
+    VirtualHeap v80000000;  // 0x80000000 - XEX heap
+    VirtualHeap v90000000;  // 0x90000000 - System heap
+    VirtualHeap physical;   // Physical backing
+    PhysicalHeap vA0000000; // 0xA0000000 - 64KB pages
+    PhysicalHeap vC0000000; // 0xC0000000 - 16MB pages
+    PhysicalHeap vE0000000; // 0xE0000000 - 4KB pages
+  } heaps_;
+};
+```
+
+## Heap Architecture
+
+### BaseHeap
+
+All heaps derive from `BaseHeap` (source:include/rex/system/xmemory.h:103):
+
+```cpp
+class BaseHeap {
+public:
+  uint32_t heap_base() const { return heap_base_; }      // Offset from membase
+  uint32_t heap_size() const { return heap_size_; }      // Total size in bytes
+  uint32_t page_size() const { return page_size_; }      // Page size (4KB/64KB/16MB)
+  uint32_t host_address_offset() const;                  // Windows granularity fix
+  
+  // Allocation API
+  virtual bool Alloc(uint32_t size, uint32_t alignment, 
+                     uint32_t allocation_type, uint32_t protect,
+                     bool top_down, uint32_t* out_address);
+  
+  virtual bool AllocFixed(uint32_t base_address, uint32_t size, 
+                          uint32_t alignment, uint32_t allocation_type,
+                          uint32_t protect);
+  
+  virtual bool Decommit(uint32_t address, uint32_t size);
+  virtual bool Release(uint32_t address, uint32_t* out_region_size);
+  virtual bool Protect(uint32_t address, uint32_t size, uint32_t protect);
+  
+  // Query API
+  bool QueryRegionInfo(uint32_t base_address, HeapAllocationInfo* out_info);
+  bool QueryProtect(uint32_t address, uint32_t* out_protect);
+  
+protected:
+  memory::Memory* memory_;
+  uint8_t* membase_;              // Base address in host memory
+  uint32_t heap_base_;            // Offset from membase
+  uint32_t heap_size_;            // Total heap size
+  uint32_t page_size_;            // Page granularity
+  uint32_t host_address_offset_;  // Platform-specific offset
+  std::vector<PageEntry> page_table_;  // Page allocation tracking
+};
+```
+
+### Page Table
+
+Each heap maintains a page table with allocation metadata (source:include/rex/system/xmemory.h:83):
+
+```cpp
+union PageEntry {
+  uint64_t qword;
+  struct {
+    uint32_t base_address : 20;       // Base of allocated region (4K pages)
+    uint32_t region_page_count : 20;  // Size in 4K pages
+    uint32_t allocation_protect : 4;  // Original protection flags
+    uint32_t current_protect : 4;     // Current protection flags
+    uint32_t state : 2;               // Reserve/Commit/Free
+    uint32_t reserved : 14;
+  };
+};
+```
+
+Each entry represents one **4KB page**, even if the heap uses larger pages (64KB/16MB). The `region_page_count` tracks contiguous allocations.
+
+### Protection Flags
+
+```cpp
+enum MemoryProtectFlag : uint32_t {
+  kMemoryProtectRead = 1 << 0,
+  kMemoryProtectWrite = 1 << 1,
+  kMemoryProtectNoCache = 1 << 2,
+  kMemoryProtectWriteCombine = 1 << 3,
+  kMemoryProtectNoAccess = 0,
+};
+```
+
+### VirtualHeap
+
+Standard heap for virtual address ranges (source:include/rex/system/xmemory.h:209):
+
+```cpp
+class VirtualHeap : public BaseHeap {
+public:
+  void Initialize(memory::Memory* memory, uint8_t* membase, 
+                  HeapType heap_type, uint32_t heap_base,
+                  uint32_t heap_size, uint32_t page_size);
+};
+```
+
+Used for:
+- `0x00000000` - Game allocations (4KB pages)
+- `0x40000000` - Rarely used virtual heap (64KB pages)
+- `0x80000000` - XEX images (64KB pages)
+- `0x90000000` - System heap (64KB pages)
+
+### PhysicalHeap
+
+Physical heaps mirror allocations to a "parent" virtual heap (source:include/rex/system/xmemory.h:226):
+
+```cpp
+class PhysicalHeap : public BaseHeap {
+public:
+  void Initialize(memory::Memory* memory, uint8_t* membase,
+                  HeapType heap_type, uint32_t heap_base,
+                  uint32_t heap_size, uint32_t page_size,
+                  VirtualHeap* parent_heap);
+  
+  uint32_t GetPhysicalAddress(uint32_t virtual_address) const;
+  
+  // Invalidation callbacks for GPU/audio caches
+  void EnableAccessCallbacks(uint32_t physical_address, uint32_t length,
+                             bool enable_invalidation_notifications,
+                             bool enable_data_providers);
+  
+  bool TriggerCallbacks(std::unique_lock<std::recursive_mutex> lock,
+                        uint32_t virtual_address, uint32_t length,
+                        bool is_write, bool unwatch_exact_range);
+  
+protected:
+  VirtualHeap* parent_heap_;
+  std::vector<SystemPageFlagsBlock> system_page_flags_;  // Write-watch flags
+};
+```
+
+Physical allocations at `0xA0000000`, `0xC0000000`, or `0xE0000000` automatically create a 1:1 mapping in the parent virtual heap.
+
+## Address Translation
+
+### Virtual to Host
+
+```cpp
+template <typename T = uint8_t*>
+inline T TranslateVirtual(uint32_t guest_address) const {
+  uint8_t* host_address = virtual_membase_ + guest_address;
+  const auto heap = LookupHeap(guest_address);
+  if (heap) {
+    host_address += heap->host_address_offset();
+  }
+  return reinterpret_cast<T>(host_address);
+}
+```
+
+**Example:**
+- Guest address: `0x82E00000`
+- `virtual_membase_`: `0x100000000` (host)
+- Host address: `0x100000000 + 0x82E00000 = 0x182E00000`
+
+### Physical to Host
+
+```cpp
+template <typename T = uint8_t*>
+inline T TranslatePhysical(uint32_t guest_address) const {
+  return reinterpret_cast<T>(physical_membase_ + (guest_address & 0x1FFFFFFF));
+}
+```
+
+Physical addresses are masked to 29 bits (512MB), then added to `physical_membase_`.
+
+### Host to Guest
+
+```cpp
+uint32_t HostToGuestVirtual(const void* host_address) const {
+  auto addr = reinterpret_cast<uintptr_t>(host_address);
+  auto base_addr = reinterpret_cast<uintptr_t>(virtual_membase_);
+  if (addr < base_addr || addr >= (base_addr + 0x100000000ull)) {
+    return 0;  // Out of range
+  }
+  return static_cast<uint32_t>(addr - base_addr);
+}
+```
+
+## Memory-Mapped File
+
+ReXGlue backs the entire 4GB guest memory with a memory-mapped file (source:include/rex/system/xmemory.h:299):
+
+```cpp
+std::filesystem::path file_name_;  // Usually "xenia_memory.bin"
+FileMappingHandle mapping_;        // OS-specific file handle
+uint8_t* mapping_base_;             // Base of mapped region
+```
+
+**Benefits:**
+1. **Persistence**: Memory state can be saved/restored by copying the file
+2. **Swapping**: OS can page unused memory to disk
+3. **Large allocations**: No need for giant `malloc()`
+
+### Memory Views
+
+Different address ranges are mapped to the same physical file at different offsets:
+
+```cpp
+union {
+  struct {
+    uint8_t* v00000000;  // Virtual 0x00000000 - 0x3FFFFFFF
+    uint8_t* v40000000;  // Virtual 0x40000000 - 0x7EFFFFFF
+    uint8_t* v7F000000;  // MMIO (not backed by file)
+    uint8_t* v80000000;  // XEX heap
+    uint8_t* v90000000;  // System heap
+    uint8_t* vA0000000;  // Physical 0x00000000 - 0x1FFFFFFF
+    uint8_t* vC0000000;  // Physical (16MB pages)
+    uint8_t* vE0000000;  // Physical (4KB pages)
+    uint8_t* physical;   // Physical backing
+  };
+  uint8_t* all_views[9];
+} views_;
+```
+
+## MMIO Handling
+
+The range `0x7F000000 - 0x7FFFFFFF` is **not backed by memory**. Accesses go through the `MMIOHandler` (source:include/rex/system/xmemory.h:354):
+
+```cpp
+bool AddVirtualMappedRange(uint32_t virtual_address, uint32_t mask,
+                           uint32_t size, void* context,
+                           runtime::MMIOReadCallback read_callback,
+                           runtime::MMIOWriteCallback write_callback);
+
+runtime::MMIORange* LookupVirtualMappedRange(uint32_t virtual_address);
+```
+
+**Example - GPU Register:**
+```cpp
+// 0x7FC80000 - GPU command processor
+memory->AddVirtualMappedRange(
+  0x7FC80000, 0xFFFF0000, 0x10000, gpu_context,
+  [](void* ctx, uint32_t addr, uint32_t* out_value) {
+    auto gpu = static_cast<GPU*>(ctx);
+    *out_value = gpu->ReadRegister(addr);
+    return true;
+  },
+  [](void* ctx, uint32_t addr, uint32_t value) {
+    auto gpu = static_cast<GPU*>(ctx);
+    gpu->WriteRegister(addr, value);
+    return true;
+  }
+);
+```
+
+## Physical Memory Callbacks
+
+Physical heaps support **invalidation callbacks** for GPU/audio cache coherency (source:include/rex/system/xmemory.h:411):
+
+```cpp
+typedef std::pair<uint32_t, uint32_t> (*PhysicalMemoryInvalidationCallback)(
+    void* context_ptr, uint32_t physical_address_start, 
+    uint32_t length, bool exact_range);
+
+void* RegisterPhysicalMemoryInvalidationCallback(
+    PhysicalMemoryInvalidationCallback callback, void* callback_context);
+
+void UnregisterPhysicalMemoryInvalidationCallback(void* callback_handle);
+```
+
+**Use Case:**
+
+When the CPU writes to a physical address that the GPU has cached:
+1. Page protection triggers a write fault
+2. ReXGlue calls all registered invalidation callbacks
+3. GPU invalidates its cache for that region
+4. Page is unprotected and write proceeds
+
+## Function Table
+
+For static recompilation, ReXGlue stores a function dispatch table in guest memory (source:include/rex/system/xmemory.h:473):
+
+```cpp
+bool InitializeFunctionTable(uint32_t code_base, uint32_t code_size,
+                             uint32_t image_base, uint32_t image_size);
+
+void SetFunction(uint32_t guest_address, PPCFunc* host_function);
+PPCFunc* GetFunction(uint32_t guest_address) const;
+```
+
+**Layout:**
+```
+Guest Address: IMAGE_BASE + IMAGE_SIZE + (guest_addr - CODE_BASE) * 2
+Contents: 8-byte host function pointer
+```
+
+**Example:**
+- `IMAGE_BASE = 0x82000000`
+- `IMAGE_SIZE = 0x1000000` (16MB)
+- `CODE_BASE = 0x82000000`
+- Function at `0x82E00000`:
+  - Table offset: `(0x82E00000 - 0x82000000) * 2 = 0x1C00000`
+  - Table address: `0x82000000 + 0x1000000 + 0x1C00000 = 0x84C00000`
+
+<Note>
+The `* 2` multiplier allows 8-byte pointers for every 4-byte-aligned address, using 2 bytes per possible function.
+</Note>
+
+## Platform-Specific Quirks
+
+### Windows: Allocation Granularity
+
+Windows requires memory mappings to align to **64KB boundaries**. The `0xE0000000` heap has a file offset of `0x1000`, which gets masked away. ReXGlue compensates with `host_address_offset_ = 0x1000` for that heap.
+
+### Linux/macOS: 4KB Granularity
+
+POSIX systems use 4KB granularity, so the file offset works correctly. `host_address_offset_ = 0`.
+
+## Memory Operations
+
+### Zero/Fill
+
+```cpp
+void Zero(uint32_t address, uint32_t size) {
+  std::memset(TranslateVirtual(address), 0, size);
+}
+
+void Fill(uint32_t address, uint32_t size, uint8_t value) {
+  std::memset(TranslateVirtual(address), value, size);
+}
+```
+
+### Copy
+
+```cpp
+void Copy(uint32_t dest, uint32_t src, uint32_t size) {
+  std::memmove(TranslateVirtual(dest), TranslateVirtual(src), size);
+}
+```
+
+### Search
+
+```cpp
+uint32_t SearchAligned(uint32_t start, uint32_t end,
+                       const uint32_t* values, size_t value_count) {
+  // Search for a pattern of big-endian dwords
+  auto ptr = TranslateVirtual<uint32_t*>(start);
+  auto end_ptr = TranslateVirtual<uint32_t*>(end);
+  // ... scan and byte-swap compare ...
+}
+```
+
+## System Heap
+
+The system heap (source:include/rex/system/xmemory.h:436) is used for kernel allocations:
+
+```cpp
+uint32_t SystemHeapAlloc(uint32_t size, uint32_t alignment = 0x20,
+                         uint32_t system_heap_flags = kSystemHeapDefault);
+void SystemHeapFree(uint32_t address);
+```
+
+Allocations come from the `0x90000000` heap, keeping kernel structures separate from game memory.
+
+## See Also
+
+- [Static Recompilation](/concepts/recompilation) - Function table initialization
+- [PowerPC Emulation](/concepts/ppc-emulation) - Memory load/store macros
+- [Kernel Emulation](/concepts/kernel-emulation) - System heap usage

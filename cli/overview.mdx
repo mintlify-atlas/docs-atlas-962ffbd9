@@ -1,0 +1,90 @@
+---
+title: "CLI Overview"
+description: "ReXGlue command-line interface for Xbox 360 recompilation"
+---
+
+ReXGlue is the command-line tool for recompiling Xbox 360 executables. It provides commands for project initialization, code generation, migration, and test generation.
+
+## Usage
+
+```bash
+rexglue <command> [flags] [args]
+```
+
+## Commands
+
+| Command | Description |
+|---------|-------------|
+| `init` | Initialize a new ReXGlue project |
+| `codegen` | Analyze XEX and generate C++ code |
+| `migrate` | Migrate project to current SDK version |
+| `recompile-tests` | Generate Catch2 tests from PPC assembly |
+
+Run `rexglue --help` for detailed flag documentation.
+
+## Common Flags
+
+These flags work with all commands:
+
+<ParamField path="--log-level" type="string" default="info">
+  Logging level: trace, debug, info, warn, error, fatal
+</ParamField>
+
+<ParamField path="--log-verbose" type="boolean" default="false">
+  Enable verbose logging (sets level to trace)
+</ParamField>
+
+<ParamField path="--log-file" type="string" default='""'>
+  Log file path (empty = no file logging)
+</ParamField>
+
+<ParamField path="--force" type="boolean" default="false">
+  Generate output even if validation errors occur
+</ParamField>
+
+## Environment Variables
+
+ReXGlue supports setting any flag via environment variables using the format:
+
+```bash
+export REX_<FLAG_NAME>=<value>
+```
+
+For example:
+
+```bash
+export REX_LOG_LEVEL=debug
+export REX_FORCE=true
+rexglue codegen myproject_config.toml
+```
+
+## Exit Codes
+
+- `0` - Success
+- `1` - Error (check logs for details)
+
+## Examples
+
+### Initialize a New Project
+
+```bash
+rexglue init --app-name my_game --app-root ./my_game_project
+```
+
+### Generate Code from Configuration
+
+```bash
+rexglue codegen my_game_config.toml
+```
+
+### Enable Verbose Logging
+
+```bash
+rexglue codegen my_game_config.toml --log-verbose
+```
+
+### Force Generation Despite Errors
+
+```bash
+rexglue codegen my_game_config.toml --force
+```

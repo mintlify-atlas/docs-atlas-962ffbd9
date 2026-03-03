@@ -1,0 +1,86 @@
+---
+title: Configuration Overview
+description: Understanding ReXGlue's configuration system
+---
+
+ReXGlue uses a TOML-based configuration system to control code generation, analysis behavior, and manual overrides for the recompiler.
+
+## Configuration Files
+
+The primary configuration is stored in a `.toml` file that you pass to the recompiler. This file controls:
+
+- **Project settings** - Project name, input/output paths
+- **Code generation options** - Register allocation, optimization flags
+- **Analysis tuning** - Function size limits, data region detection
+- **Manual overrides** - Functions, jump tables, hooks
+
+## Configuration Structure
+
+```toml
+# Required: Project identification and paths
+project_name = "myproject"
+file_path = "game.xex"
+out_directory_path = "generated"
+
+# Optional: Code generation flags
+skip_lr = false
+ctr_as_local = true
+
+# Optional: Analysis tuning
+[analysis]
+max_jump_extension = 65536
+data_region_threshold = 16
+
+# Optional: Manual function definitions
+[functions."0x82000100"]
+size = 0x200
+name = "GameInit"
+
+# Optional: Mid-assembly hooks
+[[midasm_hook]]
+address = 0x82000400
+name = "OnFrameStart"
+registers = ["r3", "r4"]
+```
+
+## Configuration Hierarchy
+
+1. **Project-level** - vcpkg.json, CMakeLists.txt for build system
+2. **Recompiler config** - TOML file for codegen behavior
+3. **Source-level** - Function annotations and attributes
+
+## Validation
+
+The configuration is validated before code generation:
+
+- All addresses must be 4-byte aligned (PowerPC instruction alignment)
+- Function boundaries cannot overlap (except chunks)
+- `size` and `end` are mutually exclusive
+- Required fields (`file_path`) must be present
+
+Validation errors will block code generation, while warnings are informational.
+
+## Loading Configuration
+
+In C++ code:
+
+```cpp
+#include <rex/codegen/config.h>
+
+rex::codegen::RecompilerConfig config;
+config.Load("myproject.toml");
+
+auto result = config.Validate();
+if (!result.valid) {
+  for (const auto& error : result.errors) {
+    fmt::print("Error: {}\n", error);
+  }
+}
+```
+
+## See Also
+
+- [Project Configuration](/config/project-config) - Build system setup
+- [Codegen Config](/config/codegen-config) - TOML reference
+- [Functions](/config/functions) - Function and chunk configuration
+- [Hooks](/config/hooks) - Mid-assembly hook system

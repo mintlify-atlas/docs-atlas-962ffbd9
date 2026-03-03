@@ -1,0 +1,239 @@
+---
+title: Exception Handlers
+description: Generate SEH exception handlers and handle runtime exceptions in recompiled code
+---
+
+## Overview
+
+ReXGlue provides unified exception handling for recompiled PowerPC code running on AMD64 and ARM64 host architectures. The exception handler system captures access violations, illegal instructions, and other runtime exceptions that occur during execution of recompiled code.
+
+## Exception Handler Generation
+
+### Configuration Option
+
+Enable exception handler generation in your recompiler config:
+
+```cpp
+rex::codegen::RecompilerConfig config;
+config.generateExceptionHandlers = true;  // Enable SEH wrapper generation
+```
+
+When enabled, the recompiler generates Structured Exception Handling (SEH) wrappers around recompiled functions, allowing you to catch and handle exceptions that occur during execution.
+
+### How It Works
+
+The exception handler system provides:
+
+- **Access Violation Handling**: Captures read/write violations and determines the faulting address
+- **Illegal Instruction Detection**: Catches invalid opcodes and unimplemented instructions
+- **Thread Context Preservation**: Maintains full CPU state at the point of exception
+- **Cross-Platform Abstraction**: Unified API across Windows (SEH) and Linux (signal handlers)
+
+## Architecture Support
+
+### AMD64 (x86-64)
+
+The AMD64 implementation (`rex::arch::X64ThreadContextMembers`) captures:
+
+- **General-purpose registers**: RAX, RCX, RDX, RBX, RSP, RBP, RSI, RDI, R8-R15
+- **XMM registers**: XMM0-XMM15 (128-bit SIMD)
+- **Control registers**: RIP (instruction pointer), EFLAGS
+
+Defined in `/home/daytona/workspace/source/include/rex/exception_handler.h:186-231`
+
+### ARM64 (AArch64)
+
+The ARM64 implementation (`rex::arch::Arm64ThreadContextMembers`) captures:
+
+- **General-purpose registers**: X0-X30, SP (stack pointer)
+- **Vector registers**: V0-V31 (128-bit NEON)
+- **Control registers**: PC (program counter), PSTATE, FPSR, FPCR
+- **Special registers**: X29 (frame pointer), X30 (link register)
+
+Defined in `/home/daytona/workspace/source/include/rex/exception_handler.h:121-129`
+
+## Exception Types
+
+### Access Violation
+
+```cpp
+rex::arch::Exception::Code::kAccessViolation
+```
+
+Triggered when recompiled code attempts to read from or write to an invalid memory address.
+
+**Properties**:
+- `fault_address()`: Returns the address that caused the violation
+- `access_violation_operation()`: Returns `kRead`, `kWrite`, or `kUnknown`
+
+### Illegal Instruction
+
+```cpp
+rex::arch::Exception::Code::kIllegalInstruction
+```
+
+Triggered when the CPU encounters an invalid opcode or unimplemented instruction.
+
+## Using Exception Handlers
+
+### Installing a Handler
+
+```cpp
+#include <rex/exception_handler.h>
+
+bool MyExceptionHandler(rex::arch::Exception* ex, void* context) {
+  if (ex->code() == rex::arch::Exception::Code::kAccessViolation) {
+    uint64_t fault_addr = ex->fault_address();
+    bool is_write = ex->access_violation_operation() == 
+                    rex::arch::Exception::AccessViolationOperation::kWrite;
+    
+    // Handle the violation (e.g., map memory, log error)
+    printf("Access violation at 0x%llx (%s)\n", 
+           fault_addr, is_write ? "write" : "read");
+    
+    // Return true to continue execution, false to propagate
+    return false;
+  }
+  return false;
+}
+
+void SetupExceptionHandling() {
+  rex::arch::ExceptionHandler::Install(MyExceptionHandler, nullptr);
+}
+```
+
+### Inspecting Thread Context
+
+Access CPU state at the point of exception:
+
+```cpp
+bool DebugExceptionHandler(rex::arch::Exception* ex, void* context) {
+  auto* thread_ctx = ex->thread_context();
+  uint64_t pc = ex->pc();
+  
+#if REX_ARCH_AMD64
+  uint64_t rax = thread_ctx->rax;
+  uint64_t rsp = thread_ctx->rsp;
+  printf("Exception at RIP=0x%llx, RAX=0x%llx, RSP=0x%llx\n", pc, rax, rsp);
+#elif REX_ARCH_ARM64
+  uint64_t x0 = thread_ctx->x[0];
+  uint64_t sp = thread_ctx->sp;
+  printf("Exception at PC=0x%llx, X0=0x%llx, SP=0x%llx\n", pc, x0, sp);
+#endif
+  
+  return false;
+}
+```
+
+### Modifying Registers
+
+You can modify registers to recover from exceptions:
+
+```cpp
+bool RecoveryHandler(rex::arch::Exception* ex, void* context) {
+#if REX_ARCH_AMD64
+  // Modify RAX and skip the faulting instruction
+  ex->ModifyIntRegister(0) = 0;  // RAX is index 0
+  ex->set_resume_pc(ex->pc() + 4);  // Skip instruction
+  return true;  // Continue execution
+#elif REX_ARCH_ARM64
+  // Modify X0 and skip the faulting instruction
+  ex->ModifyXRegister(0) = 0;
+  ex->set_resume_pc(ex->pc() + 4);
+  return true;
+#endif
+}
+```
+
+### Uninstalling a Handler
+
+```cpp
+rex::arch::ExceptionHandler::Uninstall(MyExceptionHandler, nullptr);
+```
+
+## ARM64 Load/Store Decoding
+
+For ARM64 platforms, ReXGlue includes VIXL-derived load/store instruction decoding to determine whether a faulting instruction was a load or store:
+
+```cpp
+#if REX_ARCH_ARM64
+#include <rex/exception_handler.h>
+
+bool is_store = false;
+if (rex::arch::IsArm64LoadPrefetchStore(instruction, is_store)) {
+  if (is_store) {
+    // Handle store operation
+  } else {
+    // Handle load/prefetch operation
+  }
+}
+#endif
+```
+
+See `/home/daytona/workspace/source/include/rex/exception_handler.h:345-399` for load/store operation constants.
+
+## Platform-Specific Notes
+
+### Windows
+
+- Uses Structured Exception Handling (SEH)
+- Requires `/EHa` compiler flag (enabled automatically by ReXGlue)
+- Handlers are called on the same thread that raised the exception
+
+### Linux
+
+- Uses POSIX signal handlers (SIGSEGV, SIGILL)
+- Handlers run in signal context with restricted operations
+- Avoid allocations and locks inside handlers
+
+## Best Practices
+
+1. **Keep handlers fast**: Exception handlers run in a critical context
+2. **Minimal logging**: Avoid complex I/O operations
+3. **Return false for unknown exceptions**: Let the OS handle what you can't
+4. **Test on both architectures**: AMD64 and ARM64 have different semantics
+5. **Use for debugging**: Exception handlers are invaluable for diagnosing crashes
+
+## Common Use Cases
+
+### Memory-Mapped I/O
+
+Capture access violations to emulate hardware registers:
+
+```cpp
+bool MMIOHandler(rex::arch::Exception* ex, void* context) {
+  if (ex->code() != rex::arch::Exception::Code::kAccessViolation) {
+    return false;
+  }
+  
+  uint64_t addr = ex->fault_address();
+  if (addr >= 0x80000000 && addr < 0x90000000) {
+    // Handle MMIO read/write
+    EmulateHardwareRegister(addr, ex);
+    return true;
+  }
+  return false;
+}
+```
+
+### Lazy Memory Mapping
+
+Map pages on-demand when accessed:
+
+```cpp
+bool LazyMapHandler(rex::arch::Exception* ex, void* context) {
+  if (ex->code() == rex::arch::Exception::Code::kAccessViolation) {
+    uint64_t addr = ex->fault_address();
+    if (MapPageIfNeeded(addr)) {
+      return true;  // Retry the instruction
+    }
+  }
+  return false;
+}
+```
+
+## Related APIs
+
+- `rex::arch::HostThreadContext` - Thread context structure
+- `rex::arch::Exception` - Exception information
+- `rex::arch::ExceptionHandler` - Handler registration

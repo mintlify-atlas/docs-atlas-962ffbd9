@@ -1,0 +1,381 @@
+---
+title: 'rex::runtime::Processor'
+description: 'PowerPC processor emulation with IRQL and interrupt handling'
+---
+
+## Overview
+
+The `Processor` class manages PowerPC code execution, module loading, and interrupt request level (IRQL) handling for the Xbox 360 emulation runtime.
+
+## Class Definition
+
+```cpp
+namespace rex::runtime {
+  class Processor;
+}
+```
+
+## Construction
+
+### Processor()
+
+Constructs a new Processor instance.
+
+```cpp
+Processor(memory::Memory* memory, ExportResolver* export_resolver);
+```
+
+**Parameters**:
+- `memory` - Pointer to the Memory system
+- `export_resolver` - Pointer to the export resolver for kernel functions
+
+## Initialization
+
+### PreLaunch()
+
+Runs pre-launch logic after modules and threads are initialized.
+
+```cpp
+void PreLaunch();
+```
+
+This prepares the processor for execution by setting up the initial execution environment.
+
+## Module Management
+
+### AddModule()
+
+Adds a loaded module to the processor.
+
+```cpp
+bool AddModule(std::unique_ptr<Module> module);
+```
+
+**Parameters**:
+- `module` - Unique pointer to the module to add
+
+**Returns**: `true` on success, `false` if the module couldn't be added
+
+### GetModule()
+
+Retrieves a module by name.
+
+```cpp
+Module* GetModule(const std::string_view name);
+```
+
+**Parameters**:
+- `name` - Name of the module to retrieve
+
+**Returns**: Pointer to the module, or `nullptr` if not found
+
+### GetModules()
+
+Gets a list of all loaded modules.
+
+```cpp
+std::vector<Module*> GetModules();
+```
+
+**Returns**: Vector of pointers to all loaded modules
+
+## Code Execution
+
+### Execute()
+
+Executes PowerPC code at the specified address.
+
+```cpp
+bool Execute(ThreadState* thread_state, uint32_t address);
+```
+
+**Parameters**:
+- `thread_state` - Thread state for execution context
+- `address` - Guest address to begin execution
+
+**Returns**: `true` on successful execution
+
+### ExecuteRaw()
+
+Executes raw PowerPC code without setup overhead.
+
+```cpp
+bool ExecuteRaw(ThreadState* thread_state, uint32_t address);
+```
+
+**Parameters**:
+- `thread_state` - Thread state for execution context
+- `address` - Guest address to begin execution
+
+**Returns**: `true` on successful execution
+
+### Execute() with Arguments
+
+Executes a function at the specified address with arguments.
+
+```cpp
+uint64_t Execute(ThreadState* thread_state, uint32_t address, 
+                 uint64_t args[], size_t arg_count);
+```
+
+**Parameters**:
+- `thread_state` - Thread state for execution context
+- `address` - Guest address of function to call
+- `args` - Array of arguments to pass to the function
+- `arg_count` - Number of arguments in the array
+
+**Returns**: Return value from the executed function
+
+### ExecuteInterrupt()
+
+Executes code as an interrupt handler.
+
+```cpp
+uint64_t ExecuteInterrupt(ThreadState* thread_state, uint32_t address,
+                          uint64_t args[], size_t arg_count);
+```
+
+**Parameters**:
+- `thread_state` - Thread state for execution context
+- `address` - Guest address of interrupt handler
+- `args` - Array of arguments
+- `arg_count` - Number of arguments
+
+**Returns**: Return value from the interrupt handler
+
+## Interrupt Request Level (IRQL)
+
+<Note>
+IRQL controls interrupt priority. Higher IRQL values prevent lower-priority interrupts from firing. This matches Xbox 360 kernel behavior.
+</Note>
+
+### RaiseIrql()
+
+Raises the processor's IRQL to a new level.
+
+```cpp
+Irql RaiseIrql(Irql new_value);
+```
+
+**Parameters**:
+- `new_value` - New IRQL level (must be >= current IRQL)
+
+**Returns**: Previous IRQL value
+
+**Example**:
+```cpp
+auto old_irql = processor->RaiseIrql(Irql::DISPATCH);
+// Critical section - no dispatching allowed
+processor->LowerIrql(old_irql);
+```
+
+### LowerIrql()
+
+Lowers the processor's IRQL to a previous level.
+
+```cpp
+void LowerIrql(Irql old_value);
+```
+
+**Parameters**:
+- `old_value` - Previous IRQL value (must be less than or equal to current IRQL)
+
+### current_irql()
+
+Gets the current IRQL level.
+
+```cpp
+Irql current_irql() const;
+```
+
+**Returns**: Current IRQL value
+
+## Function Table Management
+
+### InitializeFunctionTable()
+
+Initializes the function dispatch table for recompiled code.
+
+```cpp
+bool InitializeFunctionTable(uint32_t code_base, uint32_t code_size,
+                             uint32_t image_base, uint32_t image_size);
+```
+
+**Parameters**:
+- `code_base` - Base address of executable code section
+- `code_size` - Size of code section
+- `image_base` - Base address of loaded image
+- `image_size` - Total image size
+
+**Returns**: `true` on success
+
+### SetFunction()
+
+Registers a host function for a guest address in the function table.
+
+```cpp
+void SetFunction(uint32_t guest_address, ::PPCFunc* func);
+```
+
+**Parameters**:
+- `guest_address` - Guest address to map
+- `func` - Host function pointer
+
+### GetFunction()
+
+Retrieves the registered host function for a guest address.
+
+```cpp
+::PPCFunc* GetFunction(uint32_t guest_address);
+```
+
+**Parameters**:
+- `guest_address` - Guest address to lookup
+
+**Returns**: Host function pointer, or `nullptr` if not registered
+
+### HasFunctionTable()
+
+Checks if the function table has been initialized.
+
+```cpp
+bool HasFunctionTable() const;
+```
+
+**Returns**: `true` if initialized
+
+## Thread Management
+
+### OnThreadCreated()
+
+Called when a new thread is created.
+
+```cpp
+void OnThreadCreated(uint32_t handle, ThreadState* thread_state, Thread* thread);
+```
+
+**Parameters**:
+- `handle` - Thread handle
+- `thread_state` - Pointer to thread state
+- `thread` - Pointer to thread object
+
+### OnThreadExit()
+
+Called when a thread exits.
+
+```cpp
+void OnThreadExit(uint32_t thread_id);
+```
+
+**Parameters**:
+- `thread_id` - ID of exiting thread
+
+### OnThreadDestroyed()
+
+Called when a thread is destroyed.
+
+```cpp
+void OnThreadDestroyed(uint32_t thread_id);
+```
+
+**Parameters**:
+- `thread_id` - ID of destroyed thread
+
+## State Management
+
+### Save()
+
+Saves the processor state to a byte stream.
+
+```cpp
+bool Save(stream::ByteStream* stream);
+```
+
+**Parameters**:
+- `stream` - Byte stream to write to
+
+**Returns**: `true` on success
+
+### Restore()
+
+Restores the processor state from a byte stream.
+
+```cpp
+bool Restore(stream::ByteStream* stream);
+```
+
+**Parameters**:
+- `stream` - Byte stream to read from
+
+**Returns**: `true` on success
+
+## Properties
+
+### memory()
+
+Gets the associated Memory instance.
+
+```cpp
+memory::Memory* memory() const;
+```
+
+**Returns**: Pointer to the Memory system
+
+### export_resolver()
+
+Gets the associated ExportResolver.
+
+```cpp
+ExportResolver* export_resolver() const;
+```
+
+**Returns**: Pointer to the export resolver
+
+### execution_state()
+
+Gets the current execution state.
+
+```cpp
+ExecutionState execution_state() const;
+```
+
+**Returns**: Current execution state (running, paused, stepping, or ended)
+
+## Enumerations
+
+### Irql
+
+Interrupt Request Level values:
+
+```cpp
+enum class Irql : uint32_t {
+  PASSIVE = 0,  // Normal execution
+  APC = 1,      // Asynchronous procedure call level
+  DISPATCH = 2, // Thread dispatch level
+  DPC = 3       // Deferred procedure call level
+};
+```
+
+**IRQL Hierarchy**:
+- `PASSIVE` - Normal execution, all interrupts allowed
+- `APC` - APCs blocked
+- `DISPATCH` - Thread dispatching blocked
+- `DPC` - Deferred procedure calls active
+
+### ExecutionState
+
+Describes the debugger state:
+
+```cpp
+enum class ExecutionState {
+  kRunning,  // Target is running normally
+  kStepping, // Target is single-stepping
+  kPaused,   // Target is paused for debugging
+  kEnded     // Target has stopped (crash, exit, etc.)
+};
+```
+
+## See Also
+
+- [Memory](/api/memory) - Memory subsystem
+- [XThread](/api/thread) - Thread management

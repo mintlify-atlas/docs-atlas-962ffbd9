@@ -1,0 +1,185 @@
+---
+title: "rexglue init"
+description: "Initialize a new ReXGlue recompilation project"
+---
+
+The `init` command creates a new ReXGlue project with the required directory structure, build files, and configuration templates.
+
+## Usage
+
+```bash
+rexglue init --app-name <name> --app-root <path> [flags]
+```
+
+## Required Flags
+
+<ParamField path="--app-name" type="string" required>
+  Project name (snake_case, PascalCase, or kebab-case)
+  
+  This name is used throughout the generated project files. ReXGlue normalizes it to:
+  - `snake_case` for file names and CMake targets
+  - `PascalCase` for C++ class names
+  - `UPPER_CASE` for CMake variables
+</ParamField>
+
+<ParamField path="--app-root" type="string" required>
+  Project root directory path
+  
+  The directory will be created if it doesn't exist. Must be empty unless `--force` is used.
+</ParamField>
+
+## Optional Flags
+
+<ParamField path="--app-desc" type="string" default='""'>
+  Project description (optional)
+</ParamField>
+
+<ParamField path="--app-author" type="string" default='""'>
+  Project author name (optional)
+</ParamField>
+
+<ParamField path="--sdk-example" type="boolean" default="false">
+  Create as SDK example project (omits vcpkg.json)
+</ParamField>
+
+<ParamField path="--force" type="boolean" default="false">
+  Overwrite existing files in non-empty directory
+</ParamField>
+
+## Generated Project Structure
+
+```
+my_game_project/
+├── CMakeLists.txt           # SDK-managed build configuration
+├── CMakePresets.json        # Build presets for Windows/Linux
+├── my_game_config.toml      # Codegen configuration
+├── src/
+│   └── main.cpp            # SDK-managed application entry point
+└── generated/              # Output directory for generated code
+```
+
+## Examples
+
+### Basic Project Initialization
+
+```bash
+rexglue init --app-name my_game --app-root ./my_game_project
+```
+
+Output:
+```
+ReXGlue v0.1.0 - Xbox 360 Recompilation Toolkit
+Initializing project 'my_game' at: ./my_game_project
+Mode: standalone
+Creating directory structure...
+Generating project files...
+Project 'my_game' initialized in './my_game_project' successfully!
+Operation completed successfully in 0.123s
+```
+
+### Initialize with Metadata
+
+```bash
+rexglue init \
+  --app-name "Halo3" \
+  --app-root ./halo3_recomp \
+  --app-desc "Halo 3 Recompilation Project" \
+  --app-author "Your Name"
+```
+
+### Create SDK Example
+
+```bash
+rexglue init \
+  --app-name example_minimal \
+  --app-root ./examples/minimal \
+  --sdk-example
+```
+
+## Generated Files
+
+### CMakeLists.txt
+
+The generated `CMakeLists.txt` is SDK-managed and will be overwritten by [`rexglue migrate`](/cli/migrate). It includes:
+
+- CMake 3.25+ configuration with C++23 standard
+- ReXGlue SDK integration (via `REXSDK_DIR` or `find_package`)
+- Source file configuration with generated code inclusion
+- Platform-specific settings via `rexglue_configure_target()`
+- Custom codegen target: `cmake --build . --target <project>_codegen`
+
+### src/main.cpp
+
+The generated `src/main.cpp` is SDK-managed and includes:
+
+- Application class derived from `rex::ReXApp`
+- Generated configuration headers (`<project>_config.h`, `<project>_init.h`)
+- `REX_DEFINE_APP` macro registration
+
+**Note:** Customizations should go in virtual hook overrides, not in `main.cpp`.
+
+### Configuration File
+
+The `<project>_config.toml` file configures code generation:
+
+```toml
+project_name = "my_game"
+file_path = "assets/default.xex"
+out_directory_path = "generated"
+```
+
+See [Codegen Configuration](/configuration/overview) for all available options.
+
+### CMakePresets.json
+
+Provides build presets for different platforms and configurations:
+
+- `win-amd64-debug` / `win-amd64-release` (Windows with clang)
+- `linux-amd64-debug` / `linux-amd64-release` (Linux with clang-20)
+- `*-relwithdebinfo` variants for optimized debugging
+
+## Next Steps
+
+After initializing your project:
+
+1. **Add your XEX file** to `assets/default.xex` (or update the path in the config)
+2. **Configure the build:**
+   ```bash
+   cmake --preset=linux-amd64-debug
+   ```
+3. **Run code generation:**
+   ```bash
+   rexglue codegen my_game_config.toml
+   ```
+4. **Build the project:**
+   ```bash
+   cmake --build out/build/linux-amd64-debug
+   ```
+
+See [Getting Started](/getting-started/quickstart) for a complete walkthrough.
+
+## Common Errors
+
+### Directory Not Empty
+
+```
+Directory is not empty. Use --force to overwrite: ./my_game_project
+```
+
+**Solution:** Add `--force` flag or use an empty directory.
+
+### Invalid App Name
+
+```
+--app_name is required
+```
+
+**Solution:** Provide a valid project name with `--app-name`.
+
+### Missing Required Flag
+
+```
+--app_root is required for init command
+```
+
+**Solution:** Specify the project directory with `--app-root`.

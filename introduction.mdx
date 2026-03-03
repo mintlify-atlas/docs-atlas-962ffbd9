@@ -1,0 +1,142 @@
+---
+title: Introduction
+description: Convert Xbox 360 PowerPC code into portable C++ that runs natively on modern platforms
+---
+
+<img
+  className="block dark:hidden"
+  src="https://github.com/rexglue/rexglue-media/blob/main/ReX_Banner.png"
+  alt="ReXGlue Banner"
+/>
+<img
+  className="hidden dark:block"
+  src="https://github.com/rexglue/rexglue-media/blob/main/ReX_Banner.png"
+  alt="ReXGlue Banner"
+/>
+
+# Welcome to ReXGlue SDK
+
+ReXGlue converts Xbox 360 PowerPC code into portable C++ that runs natively on modern platforms.
+
+<Note>
+  **Early Development Notice**: This project is in early development. Expect significant changes and breaking API updates as development progresses. Contributions and feedback are welcome!
+</Note>
+
+## What is ReXGlue?
+
+ReXGlue is a **static recompilation toolkit** for Xbox 360 executables. Rather than interpreting or JIT-compiling PowerPC instructions at runtime like traditional emulators, ReXGlue generates C++ source code ahead of time that can be compiled and run natively on Windows and Linux.
+
+ReXGlue is heavily rooted on the foundations of [Xenia](https://github.com/xenia-project), the Xbox 360 emulator. It takes a different path inspired by [XenonRecomp](https://github.com/hedge-dev/XenonRecomp) and [rexdex's recompiler](https://github.com/rexdex/recompiler) by generating C++ source code that can be compiled with standard toolchains.
+
+## Key Features
+
+<CardGroup cols={2}>
+  <Card
+    title="Static Recompilation"
+    icon="code"
+  >
+    Generate portable C++ code from Xbox 360 XEX executables that compiles with standard toolchains
+  </Card>
+  <Card
+    title="Cross-Platform"
+    icon="desktop"
+  >
+    Run recompiled games natively on Windows (D3D12) and Linux (Vulkan) with x64 architecture
+  </Card>
+  <Card
+    title="Modern C++23"
+    icon="microchip"
+  >
+    Built with modern C++23, requires Clang 18+ for optimal performance and compatibility
+  </Card>
+  <Card
+    title="Complete Runtime"
+    icon="layer-group"
+  >
+    Includes kernel emulation, graphics backends, filesystem virtualization, and input handling
+  </Card>
+</CardGroup>
+
+## How It Works
+
+The ReXGlue workflow consists of three main phases:
+
+<Steps>
+  <Step title="Analysis">
+    ReXGlue analyzes the Xbox 360 executable (XEX format) to identify functions, data regions, and control flow patterns
+  </Step>
+  <Step title="Code Generation">
+    PowerPC instructions are translated to equivalent C++ code with full support for register state, condition flags, and exception handling
+  </Step>
+  <Step title="Compilation">
+    The generated C++ is compiled with your project using CMake and Clang 18+, linking against the ReXGlue runtime libraries
+  </Step>
+</Steps>
+
+## Example Projects
+
+See ReXGlue in action with these example projects:
+
+- [demo-iruka](https://github.com/rexglue/demo-iruka) - Demonstration project
+- [reblue](https://github.com/rexglue/reblue) - Full game recompilation
+
+## Platform Support
+
+| Platform | Architecture | Graphics Backend | Status |
+|----------|-------------|------------------|--------|
+| Windows  | x64         | D3D12           | ✅ Supported |
+| Linux    | x64         | Vulkan          | ✅ Supported |
+| macOS    | ARM64/x64   | Metal           | ❌ Not supported |
+
+## Requirements
+
+- **Compiler**: Clang 18 or newer
+- **C++ Standard**: C++23
+- **CMake**: 3.25 or newer
+- **Architecture**: x64 (64-bit) only
+- **Graphics**: D3D12 (Windows) or Vulkan (Linux)
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card
+    title="Architecture Overview"
+    icon="diagram-project"
+    href="/architecture"
+  >
+    Understand the recompilation system architecture and runtime components
+  </Card>
+  <Card
+    title="Installation"
+    icon="download"
+    href="/installation"
+  >
+    Install the ReXGlue SDK and set up your development environment
+  </Card>
+  <Card
+    title="Quick Start"
+    icon="rocket"
+    href="/quickstart"
+  >
+    Create your first recompiled project in minutes
+  </Card>
+  <Card
+    title="Join Discord"
+    icon="discord"
+    href="https://discord.gg/CNTxwSNZfT"
+  >
+    Get help, share your projects, and stay updated on development
+  </Card>
+</CardGroup>
+
+## Community & Support
+
+- **Discord**: [Join our server](https://discord.gg/CNTxwSNZfT) for updates and discussions
+- **GitHub**: [rexglue/rexglue-sdk](https://github.com/rexglue/rexglue-sdk)
+- **Releases**: [Latest SDK builds](https://github.com/rexglue/rexglue-sdk/releases)
+
+## Disclaimer
+
+ReXGlue is not affiliated with nor endorsed by Microsoft or Xbox. It is an independent project created for educational and development purposes. All trademarks and copyrights belong to their respective owners.
+
+This project is not intended to promote piracy nor unauthorized use of copyrighted material. Any misuse of this software to endorse or enable this type of activity is strictly prohibited.

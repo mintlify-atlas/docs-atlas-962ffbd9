@@ -1,0 +1,505 @@
+---
+title: UI Integration
+description: Adding custom ImGui dialogs and overlays
+---
+
+ReXApp provides ImGui integration out of the box, with built-in debug overlays and support for custom dialogs. This guide shows you how to add your own UI panels and integrate them with the application framework.
+
+## ImGui Integration Overview
+
+ReXApp creates an `ImGuiDrawer` instance that manages all ImGui rendering. Dialogs are registered with the drawer and automatically rendered each frame.
+
+### Built-in Overlays
+
+ReXApp includes these debug overlays:
+
+- **Console**: Log output viewer (toggle with `` ` `` backtick key)
+- **Debug Overlay**: FPS, frame time, system stats
+- **Settings**: Runtime configuration UI
+
+These are always available without additional setup.
+
+## Creating Custom Dialogs
+
+Custom dialogs inherit from `rex::ui::ImGuiDialog` and override the `OnDraw()` method.
+
+### Basic Dialog
+
+```cpp
+class GameStatsDialog : public rex::ui::ImGuiDialog {
+ public:
+  using ImGuiDialog::ImGuiDialog;
+
+ protected:
+  void OnDraw(ImGuiIO& io) override {
+    ImGui::Begin("Game Stats", nullptr, ImGuiWindowFlags_AlwaysAutoResize);
+    ImGui::Text("FPS: %.1f", io.Framerate);
+    ImGui::Text("Frame Time: %.3f ms", 1000.0f / io.Framerate);
+    ImGui::End();
+  }
+};
+```
+
+See `rex/ui/imgui_dialog.h:27-59`
+
+### Dialog Lifecycle Hooks
+
+```cpp
+class MyDialog : public rex::ui::ImGuiDialog {
+ protected:
+  void OnShow() override {
+    // Called when dialog is first shown
+    REXLOG_INFO("Dialog opened");
+  }
+  
+  void OnClose() override {
+    // Called when dialog is closed
+    REXLOG_INFO("Dialog closed");
+  }
+  
+  void OnDraw(ImGuiIO& io) override {
+    // Called every frame while dialog is open
+    ImGui::Begin("My Dialog");
+    // ... UI code
+    ImGui::End();
+  }
+};
+```
+
+See `rex/ui/imgui_dialog.h:51-53`
+
+## Registering Dialogs
+
+Register dialogs in the `OnCreateDialogs()` hook:
+
+```cpp
+class MyGameApp : public rex::ReXApp {
+ protected:
+  void OnCreateDialogs(ui::ImGuiDrawer* drawer) override {
+    // Create and register dialog
+    drawer->AddDialog(new GameStatsDialog(drawer));
+    drawer->AddDialog(new DebugControlsDialog(drawer));
+  }
+};
+```
+
+Dialogs are owned by the ImGuiDrawer and automatically cleaned up on shutdown.
+
+See `rex/ui/imgui_drawer.h:44`
+
+## Accessing ImGui Drawer
+
+Access the drawer through the protected accessor:
+
+```cpp
+void OnPostSetup() override {
+  // Available after OnCreateDialogs, but typically use OnCreateDialogs hook
+  auto* drawer = imgui_drawer();
+}
+```
+
+See `rex/rex_app.h:108`
+
+## Advanced Dialog Examples
+
+### Interactive Settings Dialog
+
+```cpp
+class GraphicsSettingsDialog : public rex::ui::ImGuiDialog {
+ public:
+  GraphicsSettingsDialog(ui::ImGuiDrawer* drawer, Runtime* runtime)
+      : ImGuiDialog(drawer), runtime_(runtime) {}
+
+ protected:
+  void OnDraw(ImGuiIO& io) override {
+    ImGui::Begin("Graphics Settings");
+    
+    // Checkbox
+    ImGui::Checkbox("VSync", &vsync_enabled_);
+    
+    // Slider
+    ImGui::SliderInt("Resolution Scale", &resolution_scale_, 50, 200, "%d%%");
+    
+    // Combo box
+    const char* items[] = { "Low", "Medium", "High", "Ultra" };
+    ImGui::Combo("Quality", &quality_level_, items, 4);
+    
+    // Apply button
+    if (ImGui::Button("Apply Settings")) {
+      ApplySettings();
+    }
+    
+    ImGui::End();
+  }
+
+ private:
+  void ApplySettings() {
+    // Update graphics system
+    auto* graphics = runtime_->graphics_system();
+    // Apply settings...
+    REXLOG_INFO("Graphics settings applied");
+  }
+  
+  Runtime* runtime_;
+  bool vsync_enabled_ = true;
+  int resolution_scale_ = 100;
+  int quality_level_ = 2;
+};
+```
+
+### Real-time Data Display
+
+```cpp
+class MemoryMonitorDialog : public rex::ui::ImGuiDialog {
+ public:
+  MemoryMonitorDialog(ui::ImGuiDrawer* drawer, Runtime* runtime)
+      : ImGuiDialog(drawer), runtime_(runtime) {}
+
+ protected:
+  void OnDraw(ImGuiIO& io) override {
+    ImGui::Begin("Memory Monitor");
+    
+    auto* memory = runtime_->memory();
+    
+    // Display memory stats
+    ImGui::Text("Virtual Memory");
+    ImGui::Separator();
+    
+    // Get memory stats from runtime
+    // (This is example - actual API may differ)
+    ImGui::Text("Total: 512 MB");
+    ImGui::Text("Used: %.1f MB", GetUsedMemoryMB());
+    
+    // Progress bar
+    float used_fraction = GetUsedMemoryMB() / 512.0f;
+    ImGui::ProgressBar(used_fraction, ImVec2(-1, 0));
+    
+    ImGui::End();
+  }
+
+ private:
+  float GetUsedMemoryMB() {
+    // Query runtime for memory usage
+    return 123.4f;  // Placeholder
+  }
+  
+  Runtime* runtime_;
+};
+```
+
+### Modal Dialog with Callback
+
+```cpp
+class ConfirmDialog : public rex::ui::ImGuiDialog {
+ public:
+  ConfirmDialog(ui::ImGuiDrawer* drawer, 
+                std::string title,
+                std::string message,
+                std::function<void()> on_confirm)
+      : ImGuiDialog(drawer),
+        title_(std::move(title)),
+        message_(std::move(message)),
+        on_confirm_(std::move(on_confirm)) {}
+
+ protected:
+  void OnDraw(ImGuiIO& io) override {
+    ImGui::OpenPopup(title_.c_str());
+    
+    if (ImGui::BeginPopupModal(title_.c_str(), nullptr, 
+                               ImGuiWindowFlags_AlwaysAutoResize)) {
+      ImGui::Text("%s", message_.c_str());
+      ImGui::Separator();
+      
+      if (ImGui::Button("OK", ImVec2(120, 0))) {
+        on_confirm_();
+        Close();
+      }
+      ImGui::SameLine();
+      if (ImGui::Button("Cancel", ImVec2(120, 0))) {
+        Close();
+      }
+      
+      ImGui::EndPopup();
+    }
+  }
+
+ private:
+  std::string title_;
+  std::string message_;
+  std::function<void()> on_confirm_;
+};
+
+// Usage:
+void OnCreateDialogs(ui::ImGuiDrawer* drawer) override {
+  drawer->AddDialog(new ConfirmDialog(
+      drawer,
+      "Reset Settings",
+      "Are you sure you want to reset all settings?",
+      []() { REXLOG_INFO("Settings reset"); }
+  ));
+}
+```
+
+## Accessing Runtime from Dialogs
+
+Dialogs often need access to Runtime subsystems. Pass the Runtime pointer through the constructor:
+
+```cpp
+class MyGameApp : public rex::ReXApp {
+ protected:
+  void OnCreateDialogs(ui::ImGuiDrawer* drawer) override {
+    // Pass runtime() to dialog constructor
+    drawer->AddDialog(new GameStatsDialog(drawer, runtime()));
+  }
+};
+
+class GameStatsDialog : public rex::ui::ImGuiDialog {
+ public:
+  GameStatsDialog(ui::ImGuiDrawer* drawer, Runtime* runtime)
+      : ImGuiDialog(drawer), runtime_(runtime) {}
+
+ protected:
+  void OnDraw(ImGuiIO& io) override {
+    // Access runtime subsystems
+    auto* kernel = runtime_->kernel_state();
+    auto* graphics = runtime_->graphics_system();
+    
+    ImGui::Begin("Game Stats");
+    // Display stats...
+    ImGui::End();
+  }
+
+ private:
+  Runtime* runtime_;
+};
+```
+
+## Accessing ImGuiIO
+
+The `ImGuiIO` structure provides input state and configuration:
+
+```cpp
+void OnDraw(ImGuiIO& io) override {
+  ImGui::Begin("Input Debug");
+  
+  // Display metrics
+  ImGui::Text("FPS: %.1f", io.Framerate);
+  ImGui::Text("Delta Time: %.3f ms", io.DeltaTime * 1000.0f);
+  
+  // Mouse position
+  ImGui::Text("Mouse: (%.1f, %.1f)", io.MousePos.x, io.MousePos.y);
+  
+  // Keyboard state
+  if (ImGui::IsKeyPressed(ImGuiKey_Space)) {
+    ImGui::Text("Space pressed!");
+  }
+  
+  ImGui::End();
+}
+```
+
+See `rex/rex_app.h:96` for OnCreateDialogs signature
+
+## Message Boxes
+
+For simple alerts, use the built-in message box:
+
+```cpp
+void ShowErrorMessage() {
+  auto* dialog = rex::ui::ImGuiDialog::ShowMessageBox(
+      imgui_drawer(),
+      "Error",
+      "Failed to load game data. Please check the installation."
+  );
+  
+  // Optional: wait for dialog to close
+  rex::thread::Fence fence;
+  dialog->Then(&fence);
+  fence.Wait();  // Blocks until user closes dialog
+}
+```
+
+See `rex/ui/imgui_dialog.h:34-35`
+
+## Removing Dialogs
+
+Dialogs are typically removed by calling `Close()` from within the dialog:
+
+```cpp
+void OnDraw(ImGuiIO& io) override {
+  ImGui::Begin("My Dialog");
+  
+  if (ImGui::Button("Close")) {
+    Close();  // Removes dialog from drawer
+  }
+  
+  ImGui::End();
+}
+```
+
+You can also manually remove dialogs from the drawer:
+
+```cpp
+ui::ImGuiDialog* my_dialog = new MyDialog(drawer);
+drawer->AddDialog(my_dialog);
+
+// Later...
+drawer->RemoveDialog(my_dialog);
+```
+
+See `rex/ui/imgui_drawer.h:45`
+
+## Thread Safety
+
+ImGui rendering happens on the main thread. The PPC module runs on a background thread. If your dialog needs to display data from the game thread, use proper synchronization:
+
+```cpp
+class GameStatsDialog : public rex::ui::ImGuiDialog {
+ public:
+  void UpdateFromGameThread(int kills, int deaths) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    kills_ = kills;
+    deaths_ = deaths;
+  }
+
+ protected:
+  void OnDraw(ImGuiIO& io) override {
+    std::lock_guard<std::mutex> lock(mutex_);
+    
+    ImGui::Begin("Stats");
+    ImGui::Text("Kills: %d", kills_);
+    ImGui::Text("Deaths: %d", deaths_);
+    ImGui::End();
+  }
+
+ private:
+  std::mutex mutex_;
+  int kills_ = 0;
+  int deaths_ = 0;
+};
+```
+
+Or use atomics for simple values:
+
+```cpp
+std::atomic<int> frame_count_{0};
+
+void OnDraw(ImGuiIO& io) override {
+  ImGui::Text("Frames: %d", frame_count_.load());
+}
+```
+
+## Complete Example
+
+Here's a complete application with multiple custom dialogs:
+
+```cpp
+#include "generated/my_game_config.h"
+#include "generated/my_game_init.h"
+#include <rex/rex_app.h>
+
+class MyGameApp : public rex::ReXApp {
+ public:
+  using rex::ReXApp::ReXApp;
+
+  static std::unique_ptr<rex::ui::WindowedApp> Create(
+      rex::ui::WindowedAppContext& ctx) {
+    return std::unique_ptr<MyGameApp>(new MyGameApp(ctx, "my_game",
+        {PPC_CODE_BASE, PPC_CODE_SIZE, PPC_IMAGE_BASE,
+         PPC_IMAGE_SIZE, PPCFuncMappings}));
+  }
+
+ protected:
+  void OnCreateDialogs(ui::ImGuiDrawer* drawer) override {
+    // Add custom dialogs
+    drawer->AddDialog(new GameStatsDialog(drawer, runtime()));
+    drawer->AddDialog(new MemoryMonitorDialog(drawer, runtime()));
+    drawer->AddDialog(new GraphicsSettingsDialog(drawer, runtime()));
+  }
+
+ private:
+  // Dialog implementations...
+  class GameStatsDialog : public rex::ui::ImGuiDialog {
+   public:
+    GameStatsDialog(ui::ImGuiDrawer* drawer, Runtime* runtime)
+        : ImGuiDialog(drawer), runtime_(runtime) {}
+   protected:
+    void OnDraw(ImGuiIO& io) override {
+      ImGui::Begin("Game Stats");
+      ImGui::Text("FPS: %.1f", io.Framerate);
+      ImGui::End();
+    }
+   private:
+    Runtime* runtime_;
+  };
+  
+  class MemoryMonitorDialog : public rex::ui::ImGuiDialog {
+   public:
+    using ImGuiDialog::ImGuiDialog;
+   protected:
+    void OnDraw(ImGuiIO& io) override {
+      ImGui::Begin("Memory");
+      ImGui::Text("Memory usage stats here");
+      ImGui::End();
+    }
+  };
+  
+  class GraphicsSettingsDialog : public rex::ui::ImGuiDialog {
+   public:
+    GraphicsSettingsDialog(ui::ImGuiDrawer* drawer, Runtime* runtime)
+        : ImGuiDialog(drawer), runtime_(runtime) {}
+   protected:
+    void OnDraw(ImGuiIO& io) override {
+      ImGui::Begin("Graphics Settings");
+      ImGui::Checkbox("VSync", &vsync_);
+      ImGui::End();
+    }
+   private:
+    Runtime* runtime_;
+    bool vsync_ = true;
+  };
+};
+
+REX_DEFINE_APP(my_game, MyGameApp::Create)
+```
+
+## Best Practices
+
+### Do
+
+- Keep dialog logic simple and focused
+- Use atomics or mutexes for shared state with game thread
+- Pass Runtime pointer through constructor for subsystem access
+- Use ImGui's built-in layout and styling
+- Call `Close()` when dialog should be removed
+- Use message boxes for simple alerts
+
+### Don't
+
+- Don't perform heavy computation in OnDraw (called every frame)
+- Don't access UI from the PPC module thread
+- Don't forget to handle window close (user clicking X)
+- Don't leak memory - dialogs are owned by ImGuiDrawer
+- Don't block the UI thread with long operations
+
+## ImGui Resources
+
+For detailed ImGui API documentation:
+
+- [ImGui GitHub](https://github.com/ocornut/imgui)
+- [ImGui Demo](https://github.com/ocornut/imgui/blob/master/imgui_demo.cpp) - comprehensive examples
+- [ImGui Manual](https://github.com/ocornut/imgui/wiki)
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="ReXApp Base Class" icon="code" href="/app/rexapp">
+    Learn about the application framework
+  </Card>
+  <Card title="Custom Hooks" icon="hook" href="/app/custom-hooks">
+    Customize behavior with virtual hooks
+  </Card>
+  <Card title="Runtime Setup" icon="gear" href="/app/runtime-setup">
+    Configure backend systems
+  </Card>
+</CardGroup>

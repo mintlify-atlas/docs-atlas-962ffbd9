@@ -1,0 +1,256 @@
+---
+title: Function Configuration
+description: Manually define function boundaries, names, and discontinuous chunks
+---
+
+The `[functions]` section allows you to manually specify function boundaries, override auto-generated names, and define discontinuous code chunks.
+
+## Function Definition
+
+Functions are defined using hexadecimal address keys:
+
+```toml
+[functions."0x82000100"]
+size = 0x200
+name = "GameInit"
+
+[functions."0x82000400"]
+end = 0x82000800
+name = "Render"
+```
+
+## FunctionConfig Structure
+
+From `config.h:42-54`:
+
+<ParamField path="functions.<address>.size" type="uint32" default={0}>
+  Explicit size of the function in bytes. Mutually exclusive with `end`.
+  
+  ```toml
+  [functions."0x82000100"]
+  size = 0x400  # Function is 1024 bytes
+  ```
+</ParamField>
+
+<ParamField path="functions.<address>.end" type="uint32" default={0}>
+  End address of the function (exclusive). Mutually exclusive with `size`.
+  
+  Must be greater than the start address. The function size is calculated as `end - address`.
+  
+  ```toml
+  [functions."0x82001000"]
+  end = 0x82001400  # Size = 0x400
+  ```
+</ParamField>
+
+<ParamField path="functions.<address>.name" type="string">
+  Custom symbol name for the function. If not specified, auto-generates `sub_XXXXXXXX` format.
+  
+  ```toml
+  [functions."0x82000100"]
+  size = 0x200
+  name = "PlayerUpdate"
+  ```
+</ParamField>
+
+<ParamField path="functions.<address>.parent" type="uint32" default={0}>
+  Parent function address for discontinuous chunks. When non-zero, this entry is a chunk belonging to the parent function.
+  
+  Use this for functions with non-contiguous code regions (e.g., cold/hot path separation).
+  
+  ```toml
+  # Parent function
+  [functions."0x82000100"]
+  size = 0x200
+  name = "MainLoop"
+  
+  # Chunk belonging to MainLoop
+  [functions."0x82005000"]
+  size = 0x100
+  parent = 0x82000100
+  ```
+</ParamField>
+
+## Size vs End
+
+You must specify either `size` or `end`, but not both:
+
+```toml
+# Using size (preferred)
+[functions."0x82000100"]
+size = 0x400
+
+# Using end address
+[functions."0x82000500"]
+end = 0x82000900
+
+# ERROR: Cannot use both
+[functions."0x82000A00"]
+size = 0x200
+end = 0x82000C00  # This will fail validation
+```
+
+## Discontinuous Chunks
+
+Some compilers split functions into multiple non-contiguous regions. Use the `parent` field to define chunks:
+
+```toml
+# Main function entry point
+[functions."0x82000100"]
+size = 0x200
+name = "ProcessInput"
+
+# Cold path chunk (rarely executed code)
+[functions."0x82010000"]
+size = 0x80
+parent = 0x82000100  # Belongs to ProcessInput
+
+# Another chunk
+[functions."0x82010100"]
+end = 0x82010180
+parent = 0x82000100
+```
+
+Key properties of chunks:
+
+- Chunks have `parent != 0`
+- Chunks are not entry points themselves
+- Multiple chunks can belong to the same parent
+- Chunks can overlap with other functions (parent function boundaries)
+- Standalone functions cannot overlap
+
+## Validation Rules
+
+From `config.cpp:100-124` and `config.cpp:289-350`:
+
+### Address Alignment
+
+All function addresses must be 4-byte aligned (PowerPC instruction size):
+
+```toml
+# Valid: aligned to 4 bytes
+[functions."0x82000100"]
+size = 0x200
+
+# INVALID: not aligned
+[functions."0x82000101"]  # Will fail validation
+size = 0x200
+```
+
+### Mutual Exclusivity
+
+Cannot specify both `size` and `end`:
+
+```toml
+# ERROR: Validation will fail
+[functions."0x82000100"]
+size = 0x200
+end = 0x82000300
+```
+
+### End Address Constraint
+
+When using `end`, it must be greater than the start address:
+
+```toml
+# INVALID: end <= start
+[functions."0x82000100"]
+end = 0x82000100  # Will fail
+
+# Valid
+[functions."0x82000100"]
+end = 0x82000200
+```
+
+### No Overlapping Boundaries
+
+Standalone functions (non-chunks) cannot overlap:
+
+```toml
+# INVALID: Functions overlap
+[functions."0x82000100"]
+size = 0x400  # Ends at 0x82000500
+
+[functions."0x82000300"]  # Starts before previous ends
+size = 0x200  # Will fail validation
+```
+
+Chunks CAN overlap with their parent function boundaries.
+
+## Common Patterns
+
+### Override Auto-Detection
+
+Force specific boundaries when analysis is incorrect:
+
+```toml
+[functions."0x82000100"]
+size = 0x800
+name = "ComplexFunction"
+```
+
+### Split Functions
+
+Handle hot/cold code splitting:
+
+```toml
+# Hot path (frequently executed)
+[functions."0x82000100"]
+size = 0x400
+name = "FastPath"
+
+# Cold path (error handling)
+[functions."0x82100000"]
+size = 0x200
+parent = 0x82000100
+```
+
+### Name Important Functions
+
+```toml
+[functions."0x82000100"]
+name = "main"
+
+[functions."0x82000500"]
+name = "Initialize"
+
+[functions."0x82000A00"]
+name = "Shutdown"
+```
+
+## Example Configuration
+
+```toml
+project_name = "mygame"
+file_path = "default.xex"
+out_directory_path = "generated"
+
+# Main entry point
+[functions."0x82000000"]
+size = 0x100
+name = "__start"
+
+# Game initialization
+[functions."0x82000100"]
+end = 0x82000500
+name = "GameInit"
+
+# Main loop with cold path
+[functions."0x82001000"]
+size = 0x800
+name = "MainLoop"
+
+[functions."0x82100000"]
+size = 0x200
+parent = 0x82001000  # Error handling chunk
+
+# Rendering system
+[functions."0x82002000"]
+size = 0x1000
+name = "RenderFrame"
+```
+
+## See Also
+
+- [Codegen Config](/config/codegen-config) - Main TOML reference
+- [Hooks](/config/hooks) - Mid-assembly hook configuration

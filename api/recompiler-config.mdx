@@ -1,0 +1,269 @@
+---
+title: 'RecompilerConfig'
+description: 'Recompiler configuration structure'
+---
+
+## Overview
+
+The `RecompilerConfig` structure defines all configuration options for the PowerPC to C++ recompiler, including input/output paths, code generation flags, analysis tuning parameters, and manual overrides.
+
+## Structure Definition
+
+```cpp
+namespace rex::codegen {
+  struct RecompilerConfig {
+    // Required fields
+    std::string projectName;
+    std::string filePath;
+    std::string outDirectoryPath;
+
+    // Patch files (TODO)
+    std::string patchFilePath;
+    std::string patchedFilePath;
+
+    // Code generation options
+    bool skipLr;
+    bool ctrAsLocalVariable;
+    bool xerAsLocalVariable;
+    bool reservedRegisterAsLocalVariable;
+    bool skipMsr;
+    bool crRegistersAsLocalVariables;
+    bool nonArgumentRegistersAsLocalVariables;
+    bool nonVolatileRegistersAsLocalVariables;
+    bool generateExceptionHandlers;
+
+    // Analysis tuning
+    uint32_t maxJumpExtension;
+    uint32_t dataRegionThreshold;
+    uint32_t largeFunctionThreshold;
+
+    // Manual overrides
+    std::unordered_map<uint32_t, FunctionConfig> functions;
+    std::unordered_map<uint32_t, JumpTable> switchTables;
+    std::unordered_map<uint32_t, MidAsmHook> midAsmHooks;
+    uint32_t longJmpAddress;
+    uint32_t setJmpAddress;
+
+    // User hints
+    std::unordered_map<uint32_t, uint32_t> invalidInstructionHints;
+    std::unordered_set<uint32_t> knownIndirectCallHints;
+    std::vector<uint32_t> exceptionHandlerFuncHints;
+
+    // Methods
+    void Load(const std::string_view& configFilePath);
+    ValidationResult Validate() const;
+  };
+}
+```
+
+## Required Fields
+
+<ParamField path="projectName" type="std::string" default='"rex"'>
+  Project name used for output file naming. Generated files will be named `{projectName}_generated_{index}.cpp`.
+</ParamField>
+
+<ParamField path="filePath" type="std::string" required>
+  Path to the input XEX or ELF binary file to recompile.
+</ParamField>
+
+<ParamField path="outDirectoryPath" type="std::string" required>
+  Output directory where generated C++ source files will be written.
+</ParamField>
+
+## Patch Files
+
+<ParamField path="patchFilePath" type="std::string">
+  Path to binary patch file (feature not yet implemented).
+</ParamField>
+
+<ParamField path="patchedFilePath" type="std::string">
+  Path to write patched binary (feature not yet implemented).
+</ParamField>
+
+## Code Generation Options
+
+<ParamField path="skipLr" type="bool" default="false">
+  Skip generating link register (LR) operations.
+</ParamField>
+
+<ParamField path="ctrAsLocalVariable" type="bool" default="false">
+  Allocate the count register (CTR) as a C++ local variable instead of using `ctx.ctr`.
+</ParamField>
+
+<ParamField path="xerAsLocalVariable" type="bool" default="false">
+  Allocate the fixed-point exception register (XER) as a C++ local variable.
+</ParamField>
+
+<ParamField path="reservedRegisterAsLocalVariable" type="bool" default="false">
+  Allocate the reserved register (r13) as a C++ local variable.
+</ParamField>
+
+<ParamField path="skipMsr" type="bool" default="false">
+  Skip generating machine state register (MSR) operations.
+</ParamField>
+
+<ParamField path="crRegistersAsLocalVariables" type="bool" default="false">
+  Allocate condition register fields as C++ local variables.
+</ParamField>
+
+<ParamField path="nonArgumentRegistersAsLocalVariables" type="bool" default="false">
+  Allocate non-argument general-purpose registers as C++ local variables. Excludes r3-r10 which are used for arguments.
+</ParamField>
+
+<ParamField path="nonVolatileRegistersAsLocalVariables" type="bool" default="false">
+  Allocate non-volatile general-purpose registers (r14-r31) as C++ local variables.
+</ParamField>
+
+<ParamField path="generateExceptionHandlers" type="bool" default="false">
+  Generate SEH (Structured Exception Handling) exception handler wrapper functions.
+</ParamField>
+
+## Analysis Tuning
+
+<ParamField path="maxJumpExtension" type="uint32_t" default="65536">
+  Maximum number of bytes to extend a function boundary when resolving jump table targets. Prevents runaway function detection.
+</ParamField>
+
+<ParamField path="dataRegionThreshold" type="uint32_t" default="16">
+  Number of consecutive invalid instructions required to mark a region as data (not code). Helps distinguish embedded data from code.
+</ParamField>
+
+<ParamField path="largeFunctionThreshold" type="uint32_t" default="1048576">
+  Size threshold in bytes (default 1MB). Functions exceeding this size trigger a warning as they may indicate detection errors.
+</ParamField>
+
+## Manual Overrides
+
+<ParamField path="functions" type="std::unordered_map<uint32_t, FunctionConfig>">
+  Map of address to function configuration. Allows manual specification of function boundaries, names, and chunk relationships. See [FunctionConfig](/api/function-config).
+</ParamField>
+
+<ParamField path="switchTables" type="std::unordered_map<uint32_t, JumpTable>">
+  Map of address to jump table definitions for switch statement reconstruction.
+</ParamField>
+
+<ParamField path="midAsmHooks" type="std::unordered_map<uint32_t, MidAsmHook>">
+  Map of address to mid-assembly hook configurations. Allows injecting custom C++ code at specific instruction addresses. See [FunctionConfig](/api/function-config).
+</ParamField>
+
+<ParamField path="longJmpAddress" type="uint32_t" default="0">
+  Address of custom `longjmp` implementation (0 = use standard library).
+</ParamField>
+
+<ParamField path="setJmpAddress" type="uint32_t" default="0">
+  Address of custom `setjmp` implementation (0 = use standard library).
+</ParamField>
+
+## User Hints
+
+<ParamField path="invalidInstructionHints" type="std::unordered_map<uint32_t, uint32_t>">
+  Map of address to size (in bytes) marking known invalid instruction regions. Merged with analysis results to improve disassembly accuracy.
+</ParamField>
+
+<ParamField path="knownIndirectCallHints" type="std::unordered_set<uint32_t>">
+  Set of addresses where `bctr` instructions are known to be indirect calls (vtable dispatch, computed calls) rather than tail calls.
+</ParamField>
+
+<ParamField path="exceptionHandlerFuncHints" type="std::vector<uint32_t>">
+  Additional exception handler function addresses not detected by automatic analysis.
+</ParamField>
+
+## Methods
+
+### Load()
+
+Load configuration from a TOML file.
+
+```cpp
+void Load(const std::string_view& configFilePath)
+```
+
+<ParamField path="configFilePath" type="const std::string_view&">
+  Path to the TOML configuration file.
+</ParamField>
+
+**Example TOML:**
+```toml
+projectName = "MyGame"
+filePath = "/path/to/game.xex"
+outDirectoryPath = "./generated"
+
+# Code generation
+nonVolatileRegistersAsLocalVariables = true
+generateExceptionHandlers = true
+
+# Analysis
+maxJumpExtension = 131072
+dataRegionThreshold = 32
+
+# Manual overrides
+[functions.0x82000100]
+name = "InitializeEngine"
+size = 1024
+
+[functions.0x82000500]
+name = "RenderFrame"
+end = 0x82000800
+```
+
+### Validate()
+
+Validate the loaded configuration.
+
+```cpp
+ValidationResult Validate() const
+```
+
+**Returns:** `ValidationResult` containing warnings and errors
+
+Checks performed:
+- Address alignment (4-byte boundaries)
+- Required fields are non-empty
+- Function size/end constraints
+- Path validity
+- Sanity checks (e.g., `maxJumpExtension` not excessive)
+
+**Example:**
+```cpp
+auto result = config.Validate();
+if (!result) {
+  for (const auto& error : result.errors) {
+    std::cerr << "Error: " << error << '\n';
+  }
+}
+for (const auto& warning : result.warnings) {
+  std::cout << "Warning: " << warning << '\n';
+}
+```
+
+## ValidationResult
+
+Nested structure returned by `Validate()`.
+
+```cpp
+struct ValidationResult {
+  bool valid;
+  std::vector<std::string> warnings;
+  std::vector<std::string> errors;
+
+  explicit operator bool() const { return valid; }
+};
+```
+
+<ParamField path="valid" type="bool">
+  `true` if no errors occurred (warnings are allowed). `false` if fatal errors exist.
+</ParamField>
+
+<ParamField path="warnings" type="std::vector<std::string>">
+  Non-fatal issues that don't prevent code generation but should be reviewed.
+</ParamField>
+
+<ParamField path="errors" type="std::vector<std::string>">
+  Fatal issues that block code generation unless `force` is used.
+</ParamField>
+
+## See Also
+
+- [Recompiler](/api/recompiler) - Main recompiler class
+- [FunctionConfig](/api/function-config) - Per-function configuration
+- [FunctionConfig](/api/function-config) - Per-function and hook configuration

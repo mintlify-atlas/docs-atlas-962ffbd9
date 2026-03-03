@@ -1,0 +1,331 @@
+---
+title: Debugging Recompiled Code
+description: Debug and troubleshoot recompiled PowerPC executables
+---
+
+## Overview
+
+Debugging recompiled code presents unique challenges since the generated C++ code doesn't directly correspond to the original PowerPC assembly. This guide covers tools, techniques, and common issues when debugging ReXGlue applications.
+
+## Build Configuration
+
+### Debug vs Release Builds
+
+ReXGlue supports multiple build configurations via CMake:
+
+```bash
+# Debug build (no optimization, full symbols)
+cmake -B build -DCMAKE_BUILD_TYPE=Debug
+cmake --build build --config Debug
+
+# Release build (full optimization)
+cmake -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build --config Release
+
+# Release with debug info
+cmake -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo
+cmake --build build --config RelWithDebInfo
+```
+
+**Debug flags** (from CMakeLists.txt:72-73):
+- `-g`: Generate debug symbols
+- `-O0`: No optimization for easier stepping
+
+**Release flags** (from CMakeLists.txt:74-75):
+- `-O3`: Maximum optimization
+- `-DNDEBUG`: Disables assertions
+
+## Runtime Assertions
+
+### Assertion System
+
+ReXGlue uses a comprehensive assertion system defined in `rex/assert.h`. All assertions are compiled out in Release builds when `NDEBUG` is defined.
+
+**Available assertions**:
+
+```cpp
+#include <rex/assert.h>
+
+assert_true(ptr != nullptr);              // Verify condition is true
+assert_false(error_occurred);             // Verify condition is false
+assert_not_null(my_pointer);              // Verify pointer is not null
+assert_null(freed_pointer);               // Verify pointer is null
+assert_zero(error_code);                  // Verify value is 0
+assert_not_zero(size);                    // Verify value is non-zero
+assert_unhandled_case(variable);          // Mark unhandled switch case
+assert_always();                          // Unconditional failure
+```
+
+**With custom messages**:
+
+```cpp
+assert_true(size > 0, "Buffer size must be positive");
+assert_not_null(ptr, "Failed to allocate memory");
+```
+
+### Static Assertions
+
+```cpp
+static_assert_size(MyStruct, 64);  // Verify struct is exactly 64 bytes
+```
+
+Defined in `/home/daytona/workspace/source/include/rex/assert.h:25-26`
+
+## Sanitizers
+
+### Undefined Behavior Sanitizer (UBSan)
+
+Enable UBSan to detect undefined behavior at runtime:
+
+```bash
+cmake -B build -DREXGLUE_ENABLE_SANITIZERS=ON
+cmake --build build
+```
+
+**What UBSan catches** (from CMakeLists.txt:96-101):
+- Signed integer overflow
+- Null pointer dereferences
+- Misaligned memory access
+- Division by zero
+- Invalid enum values
+- Out-of-bounds array access
+
+**Note**: AddressSanitizer (ASan) is **not compatible** with ReXGlue because it conflicts with the custom memory mapping at `0x100000000`. Only UBSan is enabled.
+
+### Running with Sanitizers
+
+```bash
+# Build with sanitizers
+cmake -B build -DREXGLUE_ENABLE_SANITIZERS=ON -DCMAKE_BUILD_TYPE=Debug
+cmake --build build
+
+# Run your recompiled executable
+./build/out/linux-amd64/my_recompiled_app
+```
+
+UBSan will print detailed diagnostics when it detects issues:
+
+```
+runtime error: signed integer overflow: 2147483647 + 1 cannot be represented in type 'int'
+```
+
+## Debugging Recompiled Functions
+
+### Function Naming
+
+Recompiled functions follow the naming convention:
+
+```cpp
+sub_XXXXXXXX()  // Auto-generated name based on address
+MyCustomName()  // Custom name from config.functions map
+```
+
+You can set custom names in your TOML config:
+
+```toml
+[functions.0x82100000]
+name = "GameInit"
+size = 0x200
+```
+
+### Setting Breakpoints
+
+**In GDB**:
+
+```bash
+gdb ./my_recompiled_app
+(gdb) break sub_82100000      # Break at auto-named function
+(gdb) break GameInit          # Break at custom-named function
+(gdb) run
+```
+
+**In LLDB**:
+
+```bash
+lldb ./my_recompiled_app
+(lldb) breakpoint set --name sub_82100000
+(lldb) run
+```
+
+### Inspecting PPC State
+
+Recompiled functions use a `PPCContext` parameter that holds the emulated PowerPC CPU state:
+
+```cpp
+// In GDB while stopped in recompiled code:
+(gdb) print ppc_ctx->r[3]     # Print GPR3
+(gdb) print ppc_ctx->lr       # Print link register
+(gdb) print ppc_ctx->ctr      # Print count register
+(gdb) print ppc_ctx->cr       # Print condition register
+```
+
+## Common Issues
+
+### Memory Access Violations
+
+**Symptom**: Segmentation fault when accessing guest memory
+
+**Cause**: Guest memory not mapped or accessed outside valid range
+
+**Debug steps**:
+1. Enable exception handlers to catch the fault address
+2. Check if address is in valid guest range (typically `0x80000000 - 0x9FFFFFFF`)
+3. Verify memory was initialized before access
+
+```cpp
+// Enable exception handler to catch faults
+rex::arch::ExceptionHandler::Install(MyDebugHandler, nullptr);
+```
+
+### Invalid Instruction Exceptions
+
+**Symptom**: `SIGILL` or illegal instruction crash
+
+**Cause**: 
+- Unimplemented PowerPC instruction
+- Invalid opcode in source binary
+- Code region executed as data
+
+**Debug steps**:
+1. Check the faulting address in exception handler
+2. Disassemble the PowerPC code at that address
+3. Add instruction to `invalidInstructionHints` if it's data:
+
+```toml
+[invalid_instruction_hints]
+0x82105000 = 64  # Mark 64 bytes as data, not code
+```
+
+### Assertion Failures
+
+**Symptom**: Assertion failed messages during execution
+
+**Debug steps**:
+1. Read the assertion message and location
+2. Set a breakpoint at the assertion line
+3. Inspect variables when assertion fires
+4. Run in Debug build for maximum information
+
+**Example**:
+
+```
+Assertion failed: Buffer size must be positive
+  Expression: size > 0
+  Location: /path/to/source.cpp:42
+```
+
+### Performance Issues in Debug Builds
+
+**Symptom**: Recompiled code runs 10-100x slower than expected
+
+**Cause**: Debug builds use `-O0` and enable expensive assertions
+
+**Solutions**:
+- Use `RelWithDebInfo` for moderate optimization with debug symbols
+- Profile in Release build, debug specific issues in Debug
+- Disable specific hot-path assertions if necessary
+
+## Logging and Tracing
+
+### Kernel Import Tracing
+
+Enable kernel import tracing to debug Xbox 360 kernel calls:
+
+```cpp
+// In your code, use the logging macros
+REXKRNL_IMPORT_TRACE("NtCreateFile", "path={} options={:#x}", path, opts);
+REXKRNL_IMPORT_RESULT("NtCreateFile", "handle={:#x}", handle);
+REXKRNL_IMPORT_WARN("NtCreateFile", "Unimplemented flag: {:#x}", flag);
+```
+
+Defined in `/home/daytona/workspace/source/include/rex/system/kernel_state.h:42-52`
+
+### Custom Debug Output
+
+Add debug prints in recompiled code:
+
+```cpp
+#ifndef NDEBUG
+  printf("[DEBUG] Function sub_82100000 entered, r3=%llx\n", ppc_ctx->r[3]);
+#endif
+```
+
+## Debugging Tools
+
+### GDB (Linux)
+
+Recommended GDB settings for ReXGlue:
+
+```bash
+# .gdbinit
+set print pretty on
+set pagination off
+set disassembly-flavor intel
+
+# Handle SIGSEGV in exception handlers
+handle SIGSEGV nostop noprint pass
+```
+
+### LLDB (macOS/Linux)
+
+```bash
+# .lldbinit
+settings set target.process.stop-on-sharedlibrary-events false
+settings set target.x86-disassembly-flavor intel
+```
+
+### Visual Studio (Windows)
+
+1. Open the generated Visual Studio solution
+2. Set the recompiled executable as the startup project
+3. F5 to debug with full IDE support
+4. Use Exception Settings to break on C++ exceptions
+
+## Advanced Debugging
+
+### Debugging the Recompiler Itself
+
+If you suspect a code generation bug:
+
+1. **Inspect generated code**: Check the output `.cpp` files in your output directory
+2. **Compare with disassembly**: Use a PowerPC disassembler on the source binary
+3. **Add code comments**: Enable verbose output in the recompiler
+4. **File a bug report**: Include the problematic function address and generated code
+
+### Memory Corruption
+
+Use Valgrind (Linux) or Dr. Memory (Windows) to detect memory errors:
+
+```bash
+# Valgrind (note: may conflict with custom memory mapping)
+valgrind --leak-check=full --track-origins=yes ./my_app
+
+# For best results, use UBSan instead
+```
+
+### Debugging Race Conditions
+
+ReXGlue is multi-threaded. Use thread sanitizer carefully:
+
+```bash
+# ThreadSanitizer (TSan) - experimental
+cmake -B build -DCMAKE_CXX_FLAGS="-fsanitize=thread"
+```
+
+**Warning**: TSan may conflict with exception handlers and custom memory mapping.
+
+## Tips and Best Practices
+
+1. **Start with Debug builds**: Get your code working first, optimize later
+2. **Use assertions liberally**: They're free in Release builds
+3. **Enable exception handlers**: Catch crashes early with detailed context
+4. **Test incrementally**: Recompile one function at a time when debugging
+5. **Compare with emulation**: Run the same code in Xenia to verify behavior
+6. **Read the generated code**: Understanding the output helps debug issues
+7. **Use sanitizers in CI**: Catch bugs before they reach production
+
+## Related Topics
+
+- [Exception Handlers](/advanced/exception-handlers) - Catch and handle runtime exceptions
+- [Optimization](/advanced/optimization) - Performance tuning and optimization flags
+- [Platform Support](/advanced/platform-support) - Platform-specific debugging notes

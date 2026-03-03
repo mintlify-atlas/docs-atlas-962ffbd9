@@ -1,0 +1,182 @@
+---
+title: "rex::ReXApp"
+description: "Base class for recompiled Xbox 360 applications"
+---
+
+## Overview
+
+`rex::ReXApp` is the base class for recompiled Xbox 360 applications in the ReXGlue SDK. It handles all boilerplate setup including runtime initialization, window creation, ImGui integration, module launching, and shutdown. Consumer projects inherit from this class and optionally override virtual hooks for customization.
+
+## Constructor
+
+```cpp
+protected:
+ReXApp(ui::WindowedAppContext& ctx, 
+       std::string_view name, 
+       PPCImageInfo ppc_info,
+       std::string_view usage = "[game_directory]");
+```
+
+<ParamField path="ctx" type="ui::WindowedAppContext&" required>
+  Windowed application context
+</ParamField>
+
+<ParamField path="name" type="std::string_view" required>
+  Application name identifier
+</ParamField>
+
+<ParamField path="ppc_info" type="PPCImageInfo" required>
+  PPC image layout information (code base, size, function mappings)
+</ParamField>
+
+<ParamField path="usage" type="std::string_view" default="[game_directory]">
+  Command-line usage string for help text
+</ParamField>
+
+## Virtual Hooks
+
+These methods can be overridden in subclasses to customize application behavior:
+
+### OnPreSetup
+
+```cpp
+virtual void OnPreSetup(RuntimeConfig& config);
+```
+
+Called before `Runtime::Setup()`. Override to modify backend configuration.
+
+<ParamField path="config" type="RuntimeConfig&">
+  Runtime configuration that can be modified before setup
+</ParamField>
+
+### OnPostSetup
+
+```cpp
+virtual void OnPostSetup();
+```
+
+Called after runtime is fully initialized, before window creation. Use for post-initialization setup.
+
+### OnCreateDialogs
+
+```cpp
+virtual void OnCreateDialogs(ui::ImGuiDrawer* drawer);
+```
+
+Called after ImGui drawer is created. Add custom dialogs and UI overlays here.
+
+<ParamField path="drawer" type="ui::ImGuiDrawer*">
+  ImGui drawer instance to register custom dialogs with
+</ParamField>
+
+### OnShutdown
+
+```cpp
+virtual void OnShutdown();
+```
+
+Called before cleanup begins. Release custom resources here.
+
+### OnConfigurePaths
+
+```cpp
+virtual void OnConfigurePaths(PathConfig& paths);
+```
+
+Called after path defaults are computed, before Runtime is constructed. Override to adjust game/user/update data paths programmatically.
+
+<ParamField path="paths" type="PathConfig&">
+  Path configuration with defaults that can be modified
+</ParamField>
+
+## Accessor Methods
+
+These protected methods provide access to core components for subclass use:
+
+### runtime
+
+```cpp
+Runtime* runtime() const;
+```
+
+Returns pointer to the Runtime instance.
+
+### window
+
+```cpp
+ui::Window* window() const;
+```
+
+Returns pointer to the Window instance.
+
+### imgui_drawer
+
+```cpp
+ui::ImGuiDrawer* imgui_drawer() const;
+```
+
+Returns pointer to the ImGuiDrawer instance.
+
+### game_data_root
+
+```cpp
+const std::filesystem::path& game_data_root() const;
+```
+
+Returns the game data root directory path.
+
+### user_data_root
+
+```cpp
+const std::filesystem::path& user_data_root() const;
+```
+
+Returns the user data root directory path.
+
+### update_data_root
+
+```cpp
+const std::filesystem::path& update_data_root() const;
+```
+
+Returns the update data root directory path.
+
+## Example: Subclassing ReXApp
+
+The generated `main.cpp` from `rexglue init` or `rexglue migrate` creates a subclass like this:
+
+```cpp
+class MyApp : public rex::ReXApp {
+public:
+    using rex::ReXApp::ReXApp;
+    
+    static std::unique_ptr<rex::ui::WindowedApp> Create(
+        rex::ui::WindowedAppContext& ctx) {
+      return std::unique_ptr<MyApp>(new MyApp(ctx, "my_app",
+          {PPC_CODE_BASE, PPC_CODE_SIZE, PPC_IMAGE_BASE,
+           PPC_IMAGE_SIZE, PPCFuncMappings}));
+    }
+    
+protected:
+    // Override virtual hooks as needed
+    void OnPreSetup(RuntimeConfig& config) override {
+        // Customize runtime configuration
+    }
+    
+    void OnCreateDialogs(ui::ImGuiDrawer* drawer) override {
+        // Add custom UI dialogs
+    }
+    
+    void OnConfigurePaths(PathConfig& paths) override {
+        // Adjust data paths if needed
+        paths.user_data_root = "/custom/save/location";
+    }
+};
+
+REX_DEFINE_APP(my_app, MyApp::Create)
+```
+
+## See Also
+
+- [PPCImageInfo](/api/ppc-image-info) - PPC image layout structure
+- [PathConfig](/api/path-config) - Path configuration structure

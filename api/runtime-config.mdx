@@ -1,0 +1,244 @@
+---
+title: "RuntimeConfig"
+description: "Configuration structure for Runtime subsystem dependency injection"
+---
+
+# RuntimeConfig
+
+The `RuntimeConfig` structure provides dependency injection for Runtime subsystem backends. This keeps the runtime library decoupled from concrete backend implementations (graphics, audio, input).
+
+## Structure Definition
+
+```cpp
+struct RuntimeConfig {
+  std::unique_ptr<system::IGraphicsSystem> graphics;
+  std::function<std::unique_ptr<system::IAudioSystem>(runtime::Processor*)> audio_factory;
+  std::function<std::unique_ptr<system::IInputSystem>(bool tool_mode)> input_factory;
+  bool tool_mode = false;
+};
+```
+
+## Fields
+
+<ParamField path="graphics" type="std::unique_ptr<system::IGraphicsSystem>">
+  Graphics backend implementation. Moved directly into Runtime during `Setup()`.
+  
+  **Available implementations:**
+  - `rex::graphics::vulkan::VulkanGraphicsSystem` (cross-platform)
+  - `rex::graphics::d3d12::D3D12GraphicsSystem` (Windows only)
+  
+  Use the `REX_GRAPHICS_BACKEND()` macro for easy instantiation.
+</ParamField>
+
+<ParamField path="audio_factory" type="std::function<std::unique_ptr<system::IAudioSystem>(runtime::Processor*)>">
+  Factory function that creates an audio backend. Takes a `Processor*` because `IAudioSystem` requires processor access at construction time (only available during `Setup()`).
+  
+  **Available implementations:**
+  - `rex::audio::sdl::SDLAudioSystem` (cross-platform, SDL2-based)
+  
+  Use the `REX_AUDIO_BACKEND()` macro for easy factory creation.
+</ParamField>
+
+<ParamField path="input_factory" type="std::function<std::unique_ptr<system::IInputSystem>(bool tool_mode)>">
+  Factory function that creates an input backend. Takes `tool_mode` parameter to allow skipping input initialization in headless tools.
+  
+  **Available implementations:**
+  - `rex::input::CreateDefaultInputSystem` (platform-dependent default)
+  
+  Use the `REX_INPUT_BACKEND()` macro for easy factory creation.
+</ParamField>
+
+<ParamField path="tool_mode" type="bool" default="false">
+  If `true`, skips GPU initialization for analysis tools (like codegen). Audio and input may also be skipped based on factory implementation.
+</ParamField>
+
+## Helper Macros
+
+The SDK provides three helper macros for populating `RuntimeConfig` with concrete backends:
+
+### REX_GRAPHICS_BACKEND
+
+```cpp
+#define REX_GRAPHICS_BACKEND(Type) std::make_unique<Type>()
+```
+
+Creates a graphics backend instance.
+
+<ParamField path="Type" type="typename" required>
+  Graphics system class name (e.g., `rex::graphics::vulkan::VulkanGraphicsSystem`).
+</ParamField>
+
+**Example:**
+
+```cpp
+config.graphics = REX_GRAPHICS_BACKEND(rex::graphics::vulkan::VulkanGraphicsSystem);
+```
+
+### REX_AUDIO_BACKEND
+
+```cpp
+#define REX_AUDIO_BACKEND(Type) \
+  [](::rex::runtime::Processor* _proc) -> std::unique_ptr<::rex::system::IAudioSystem> { \
+    return Type::Create(_proc); \
+  }
+```
+
+Creates an audio backend factory lambda. The factory receives the `Processor*` during runtime initialization.
+
+<ParamField path="Type" type="typename" required>
+  Audio system class name with a static `Create(Processor*)` method (e.g., `rex::audio::sdl::SDLAudioSystem`).
+</ParamField>
+
+**Example:**
+
+```cpp
+config.audio_factory = REX_AUDIO_BACKEND(rex::audio::sdl::SDLAudioSystem);
+```
+
+### REX_INPUT_BACKEND
+
+```cpp
+#define REX_INPUT_BACKEND(SetupFunc) \
+  [](bool _tool_mode) -> std::unique_ptr<::rex::system::IInputSystem> { \
+    return SetupFunc(_tool_mode); \
+  }
+```
+
+Creates an input backend factory lambda. The factory receives the `tool_mode` flag during runtime initialization.
+
+<ParamField path="SetupFunc" type="function" required>
+  Input system setup function with signature `std::unique_ptr<IInputSystem>(bool tool_mode)`.
+</ParamField>
+
+**Example:**
+
+```cpp
+config.input_factory = REX_INPUT_BACKEND(rex::input::CreateDefaultInputSystem);
+```
+
+## Design Notes
+
+### Why Factories for Audio and Input?
+
+**Audio** uses a factory because `IAudioSystem` requires a `Processor*` at construction time. The processor is only available during `Runtime::Setup()`, so we can't construct audio backends before calling `Setup()`.
+
+**Input** uses a factory to allow the backend to check `tool_mode` and skip initialization in headless scenarios (e.g., codegen tools).
+
+**Graphics** is passed directly as a `unique_ptr` because it doesn't require runtime-specific parameters at construction.
+
+## Usage Example
+
+### Full Configuration
+
+```cpp
+#include <rex/runtime.h>
+#include <rex/graphics/vulkan/graphics_system.h>
+#include <rex/audio/sdl/sdl_audio_system.h>
+#include <rex/input/input_system.h>
+
+rex::RuntimeConfig config;
+
+// Graphics: Vulkan backend
+config.graphics = REX_GRAPHICS_BACKEND(rex::graphics::vulkan::VulkanGraphicsSystem);
+
+// Audio: SDL2 backend
+config.audio_factory = REX_AUDIO_BACKEND(rex::audio::sdl::SDLAudioSystem);
+
+// Input: Platform default
+config.input_factory = REX_INPUT_BACKEND(rex::input::CreateDefaultInputSystem);
+
+// Not tool mode (full initialization)
+config.tool_mode = false;
+
+// Pass to Runtime::Setup()
+auto status = runtime->Setup(std::move(config));
+```
+
+### Tool Mode (No GPU)
+
+```cpp
+rex::RuntimeConfig config;
+config.tool_mode = true;  // Skip GPU initialization
+
+// Optionally still configure audio/input if needed by tool
+config.audio_factory = REX_AUDIO_BACKEND(rex::audio::sdl::SDLAudioSystem);
+config.input_factory = REX_INPUT_BACKEND(rex::input::CreateDefaultInputSystem);
+
+auto status = runtime->Setup(std::move(config));
+```
+
+### Platform-Specific Graphics
+
+```cpp
+rex::RuntimeConfig config;
+
+#if REX_HAS_D3D12
+  config.graphics = REX_GRAPHICS_BACKEND(rex::graphics::d3d12::D3D12GraphicsSystem);
+#elif REX_HAS_VULKAN
+  config.graphics = REX_GRAPHICS_BACKEND(rex::graphics::vulkan::VulkanGraphicsSystem);
+#else
+  #error "No graphics backend available"
+#endif
+
+config.audio_factory = REX_AUDIO_BACKEND(rex::audio::sdl::SDLAudioSystem);
+config.input_factory = REX_INPUT_BACKEND(rex::input::CreateDefaultInputSystem);
+
+auto status = runtime->Setup(std::move(config));
+```
+
+## Real-World Example
+
+From `src/ui/rex_app.cpp:122-133`:
+
+```cpp
+// Build runtime config with default platform backends
+rex::RuntimeConfig config;
+#if REX_HAS_D3D12
+config.graphics = REX_GRAPHICS_BACKEND(rex::graphics::d3d12::D3D12GraphicsSystem);
+#elif REX_HAS_VULKAN
+config.graphics = REX_GRAPHICS_BACKEND(rex::graphics::vulkan::VulkanGraphicsSystem);
+#endif
+config.audio_factory = REX_AUDIO_BACKEND(rex::audio::sdl::SDLAudioSystem);
+config.input_factory = REX_INPUT_BACKEND(rex::input::CreateDefaultInputSystem);
+
+// Allow subclass to customize config
+OnPreSetup(config);
+
+auto status = runtime_->Setup(ppc_info_.code_base, ppc_info_.code_size, ppc_info_.image_base,
+                              ppc_info_.image_size, ppc_info_.func_mappings, std::move(config));
+```
+
+## Macro Expansion Example
+
+To understand what the macros do, here's what they expand to:
+
+```cpp
+// This:
+config.graphics = REX_GRAPHICS_BACKEND(rex::graphics::vulkan::VulkanGraphicsSystem);
+
+// Expands to:
+config.graphics = std::make_unique<rex::graphics::vulkan::VulkanGraphicsSystem>();
+
+// This:
+config.audio_factory = REX_AUDIO_BACKEND(rex::audio::sdl::SDLAudioSystem);
+
+// Expands to:
+config.audio_factory = [](::rex::runtime::Processor* _proc) -> std::unique_ptr<::rex::system::IAudioSystem> {
+  return rex::audio::sdl::SDLAudioSystem::Create(_proc);
+};
+
+// This:
+config.input_factory = REX_INPUT_BACKEND(rex::input::CreateDefaultInputSystem);
+
+// Expands to:
+config.input_factory = [](bool _tool_mode) -> std::unique_ptr<::rex::system::IInputSystem> {
+  return rex::input::CreateDefaultInputSystem(_tool_mode);
+};
+```
+
+## See Also
+
+- [rex::Runtime](/api/runtime) - Main runtime class that consumes this config
+- Graphics System - GPU emulation backends
+- Audio System - Audio processing backends
+- Input System - Controller and keyboard input backends

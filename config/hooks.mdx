@@ -1,0 +1,333 @@
+---
+title: Mid-Assembly Hooks
+description: Inject custom C++ code at specific PowerPC instruction addresses
+---
+
+Mid-assembly hooks allow you to inject custom C++ function calls at specific PowerPC instruction addresses during code generation. This is useful for logging, debugging, and implementing custom behavior.
+
+## MidAsmHook Structure
+
+From `config.h:25-38`:
+
+```cpp
+struct MidAsmHook {
+  std::string name;
+  std::vector<std::string> registers;
+  
+  bool ret = false;
+  bool returnOnTrue = false;
+  bool returnOnFalse = false;
+  
+  uint32_t jumpAddress = 0;
+  uint32_t jumpAddressOnTrue = 0;
+  uint32_t jumpAddressOnFalse = 0;
+  
+  bool afterInstruction = false;
+};
+```
+
+## Basic Hook Definition
+
+Hooks are defined in an array of tables:
+
+```toml
+[[midasm_hook]]
+address = 0x82000400
+name = "OnFrameStart"
+registers = ["r3", "r4"]
+```
+
+## Configuration Fields
+
+<ParamField path="midasm_hook[].address" type="uint32" required>
+  PowerPC instruction address where the hook should be injected.
+  
+  ```toml
+  [[midasm_hook]]
+  address = 0x82000400
+  name = "MyHook"
+  ```
+</ParamField>
+
+<ParamField path="midasm_hook[].name" type="string" required>
+  Name of the C++ function to call. This function must be defined in your custom code.
+  
+  ```toml
+  [[midasm_hook]]
+  address = 0x82000400
+  name = "LogFrameStart"
+  ```
+</ParamField>
+
+<ParamField path="midasm_hook[].registers" type="array of strings">
+  PowerPC registers to pass as arguments to the hook function.
+  
+  Registers are passed in order: `hook(r3, r4, r5)`
+  
+  ```toml
+  [[midasm_hook]]
+  address = 0x82000400
+  name = "ProcessData"
+  registers = ["r3", "r4", "r5", "r6"]
+  ```
+</ParamField>
+
+<ParamField path="midasm_hook[].return" type="boolean" default={false}>
+  If true, the hook function's return value is used to immediately return from the current function.
+  
+  Cannot be combined with `jump_address`, `return_on_true`, or `return_on_false`.
+  
+  ```toml
+  [[midasm_hook]]
+  address = 0x82000400
+  name = "CheckEarlyExit"
+  registers = ["r3"]
+  return = true
+  ```
+</ParamField>
+
+<ParamField path="midasm_hook[].return_on_true" type="boolean" default={false}>
+  Return from the current function if the hook function returns true (non-zero).
+  
+  Cannot be combined with `return` or `jump_address`.
+  
+  ```toml
+  [[midasm_hook]]
+  address = 0x82000400
+  name = "ShouldSkipFrame"
+  return_on_true = true
+  ```
+</ParamField>
+
+<ParamField path="midasm_hook[].return_on_false" type="boolean" default={false}>
+  Return from the current function if the hook function returns false (zero).
+  
+  Cannot be combined with `return` or `jump_address`.
+  
+  ```toml
+  [[midasm_hook]]
+  address = 0x82000400
+  name = "ValidateInput"
+  return_on_false = true  # Return if validation fails
+  ```
+</ParamField>
+
+<ParamField path="midasm_hook[].jump_address" type="uint32" default={0}>
+  PowerPC address to jump to unconditionally after calling the hook.
+  
+  Cannot be combined with `return`, `return_on_true`, or `return_on_false`.
+  
+  ```toml
+  [[midasm_hook]]
+  address = 0x82000400
+  name = "RedirectFlow"
+  jump_address = 0x82001000
+  ```
+</ParamField>
+
+<ParamField path="midasm_hook[].jump_address_on_true" type="uint32" default={0}>
+  Jump to this address if the hook function returns true.
+  
+  Cannot be combined with `return` or `jump_address`.
+  
+  ```toml
+  [[midasm_hook]]
+  address = 0x82000400
+  name = "CheckCondition"
+  jump_address_on_true = 0x82001000
+  jump_address_on_false = 0x82002000
+  ```
+</ParamField>
+
+<ParamField path="midasm_hook[].jump_address_on_false" type="uint32" default={0}>
+  Jump to this address if the hook function returns false.
+  
+  Must be used with `jump_address_on_true`.
+</ParamField>
+
+<ParamField path="midasm_hook[].after_instruction" type="boolean" default={false}>
+  If true, inject the hook after the instruction at the address. Otherwise, inject before.
+  
+  ```toml
+  [[midasm_hook]]
+  address = 0x82000400
+  name = "AfterStore"
+  after_instruction = true
+  ```
+</ParamField>
+
+## Validation Rules
+
+From `config.cpp:254-264`:
+
+### Cannot Return and Jump
+
+A hook cannot both return and jump:
+
+```toml
+# INVALID: Cannot specify both
+[[midasm_hook]]
+address = 0x82000400
+name = "BadHook"
+return = true
+jump_address = 0x82001000  # Error!
+```
+
+### Cannot Mix Direct and Conditional
+
+Cannot mix direct return/jump with conditional return/jump:
+
+```toml
+# INVALID: Cannot mix direct and conditional
+[[midasm_hook]]
+address = 0x82000400
+name = "BadHook"
+return = true
+return_on_true = true  # Error!
+```
+
+## Hook Function Signature
+
+Your C++ hook function must match the signature based on registers:
+
+```cpp
+// No registers: void hook()
+void LogEvent() {
+  fmt::print("Event occurred\n");
+}
+
+// With registers: void hook(uint32_t r3, uint32_t r4, ...)
+void ProcessData(uint32_t r3, uint32_t r4) {
+  fmt::print("r3={:08X}, r4={:08X}\n", r3, r4);
+}
+
+// Returning bool for conditional behavior
+bool CheckCondition(uint32_t r3) {
+  return r3 > 0x100;
+}
+
+// Returning value for direct return
+uint32_t ComputeValue(uint32_t r3, uint32_t r4) {
+  return r3 + r4;
+}
+```
+
+## Common Use Cases
+
+### Logging and Debugging
+
+Log function parameters:
+
+```toml
+[[midasm_hook]]
+address = 0x82000400
+name = "LogFunctionEntry"
+registers = ["r3", "r4", "r5"]
+```
+
+```cpp
+void LogFunctionEntry(uint32_t r3, uint32_t r4, uint32_t r5) {
+  fmt::print("Function called: r3={:08X}, r4={:08X}, r5={:08X}\n", r3, r4, r5);
+}
+```
+
+### Early Exit
+
+Skip function execution based on condition:
+
+```toml
+[[midasm_hook]]
+address = 0x82000400
+name = "ShouldSkipRendering"
+return_on_true = true
+```
+
+```cpp
+bool ShouldSkipRendering() {
+  return g_skipFrame;
+}
+```
+
+### Value Injection
+
+Replace computed values:
+
+```toml
+[[midasm_hook]]
+address = 0x82000400
+name = "OverrideValue"
+registers = ["r3"]
+return = true
+```
+
+```cpp
+uint32_t OverrideValue(uint32_t original) {
+  if (g_useOverride) {
+    return g_overrideValue;
+  }
+  return original;
+}
+```
+
+### Control Flow Redirection
+
+Dynamically redirect execution:
+
+```toml
+[[midasm_hook]]
+address = 0x82000400
+name = "CheckGameMode"
+jump_address_on_true = 0x82001000   # Single player
+jump_address_on_false = 0x82002000  # Multiplayer
+```
+
+```cpp
+bool CheckGameMode() {
+  return g_gameMode == SINGLE_PLAYER;
+}
+```
+
+## Example Configuration
+
+```toml
+project_name = "mygame"
+file_path = "default.xex"
+out_directory_path = "generated"
+
+# Log frame start
+[[midasm_hook]]
+address = 0x82000100
+name = "OnFrameStart"
+registers = ["r3"]  # Frame number
+
+# Early exit if paused
+[[midasm_hook]]
+address = 0x82000200
+name = "IsPaused"
+return_on_true = true
+
+# Debug memory access
+[[midasm_hook]]
+address = 0x82000300
+name = "LogMemoryRead"
+registers = ["r3", "r4"]  # Address, size
+after_instruction = true
+
+# Override random seed
+[[midasm_hook]]
+address = 0x82000400
+name = "GetRandomSeed"
+return = true
+
+# Conditional branch redirection
+[[midasm_hook]]
+address = 0x82000500
+name = "CheckDifficulty"
+jump_address_on_true = 0x82001000   # Easy mode
+jump_address_on_false = 0x82001500  # Hard mode
+```
+
+## See Also
+
+- [Codegen Config](/config/codegen-config) - Main TOML reference
+- [Functions](/config/functions) - Function configuration

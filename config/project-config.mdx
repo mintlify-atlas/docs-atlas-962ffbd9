@@ -1,0 +1,128 @@
+---
+title: Project Configuration
+description: Setting up vcpkg and CMake for your recompilation project
+---
+
+ReXGlue projects use vcpkg for dependency management and CMake for building. This page covers the project-level configuration files.
+
+## vcpkg.json
+
+Create a `vcpkg.json` manifest in your project root:
+
+```json
+{
+  "name": "myproject",
+  "version": "1.0.0",
+  "dependencies": [
+    "fmt",
+    "spdlog"
+  ],
+  "builtin-baseline": "latest"
+}
+```
+
+### Required Dependencies
+
+ReXGlue requires:
+
+- **fmt** - String formatting (used by generated code)
+- **spdlog** - Logging (optional but recommended)
+
+The recompiler itself uses additional dependencies (toml++, etc.) but these are not needed in generated projects.
+
+## CMakeLists.txt
+
+Minimal CMake configuration for a recompiled project:
+
+```cmake
+cmake_minimum_required(VERSION 3.20)
+project(myproject)
+
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+# Find dependencies
+find_package(fmt CONFIG REQUIRED)
+find_package(spdlog CONFIG REQUIRED)
+
+# Add generated source files
+file(GLOB_RECURSE GENERATED_SOURCES "generated/*.cpp")
+
+# Create executable
+add_executable(myproject
+  src/main.cpp
+  ${GENERATED_SOURCES}
+)
+
+target_link_libraries(myproject PRIVATE
+  fmt::fmt
+  spdlog::spdlog
+)
+
+target_include_directories(myproject PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/generated
+  ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+```
+
+## Build System Integration
+
+### Using vcpkg Toolchain
+
+Configure CMake with the vcpkg toolchain:
+
+```bash
+cmake -B build \
+  -DCMAKE_TOOLCHAIN_FILE="$VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake"
+cmake --build build
+```
+
+### Output Directory Structure
+
+The recompiler generates files into the directory specified by `out_directory_path` in your TOML config:
+
+```
+generated/
+├── functions.cpp        # Main function implementations
+├── functions.h          # Function declarations
+├── imports.cpp          # Import thunks
+├── ppc_state.h          # PowerPC state structure
+└── ppc_context.h        # Execution context
+```
+
+## Platform-Specific Settings
+
+### Windows (MSVC)
+
+```cmake
+if(MSVC)
+  # Enable exception handling for SEH support
+  target_compile_options(myproject PRIVATE /EHsc)
+  
+  # Increase stack size if needed (for deeply nested calls)
+  target_link_options(myproject PRIVATE /STACK:8388608)
+endif()
+```
+
+### Linux/macOS (GCC/Clang)
+
+```cmake
+if(UNIX)
+  target_compile_options(myproject PRIVATE
+    -Wall
+    -Wextra
+    -Wno-unused-parameter
+  )
+endif()
+```
+
+## Compiler Requirements
+
+- **C++20** or later required
+- **MSVC 2022+**, **GCC 11+**, or **Clang 14+**
+- **64-bit host** architecture
+
+## Next Steps
+
+- [Codegen Config](/config/codegen-config) - Configure the recompiler
+- [Functions](/config/functions) - Define custom function boundaries

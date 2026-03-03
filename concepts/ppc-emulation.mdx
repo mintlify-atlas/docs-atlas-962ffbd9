@@ -1,0 +1,448 @@
+---
+title: PowerPC Instruction Translation
+description: How ReXGlue translates and executes PowerPC instructions on x86-64/ARM64
+---
+
+## Overview
+
+ReXGlue translates PowerPC instructions to native C++ code that executes on x86-64 and ARM64 architectures. This page explains the instruction translation strategy, register mapping, and execution model.
+
+## PPCContext Structure
+
+The `PPCContext` (source:include/rex/ppc/context.h:170) represents the complete PowerPC processor state:
+
+```cpp
+struct alignas(0x40) PPCContext {
+  // Kernel state pointer
+  rex::system::KernelState* kernel_state;
+  
+  // General Purpose Registers (GPRs)
+  PPCRegister r0, r1, r2, r3, ..., r31;
+  
+  // Link Register and Count Register
+  uint64_t lr;
+  PPCRegister ctr;
+  
+  // Fixed-Point Exception Register
+  PPCXERRegister xer;  // {so, ov, ca}
+  
+  // Condition Register fields
+  PPCCRRegister cr0, cr1, ..., cr7;  // {lt, gt, eq, so/un}
+  
+  // Floating-Point Status and Control Register
+  PPCFPSCRRegister fpscr;
+  
+  // Floating-Point Registers (FPRs)
+  PPCRegister f0, f1, ..., f31;  // 64-bit doubles
+  
+  // Vector Registers (VMX/AltiVec)
+  PPCVRegister v0, v1, ..., v127;  // 128-bit vectors
+  
+  // Vector Status and Control Register
+  uint8_t vscr_sat;  // Saturation flag
+};
+```
+
+<Info>
+The context is aligned to 64 bytes (`alignas(0x40)`) for optimal cache performance. It's passed by reference to every recompiled function.
+</Info>
+
+## Register Types
+
+ReXGlue defines several register types (source:include/rex/ppc/types.h):
+
+### General Purpose Register
+
+```cpp
+union Register {
+  int8_t s8;
+  uint8_t u8;
+  int16_t s16;
+  uint16_t u16;
+  int32_t s32;
+  uint32_t u32;
+  int64_t s64;
+  uint64_t u64;
+  float f32;
+  double f64;
+};
+```
+
+PowerPC GPRs are 64-bit, but most instructions only use the lower 32 bits. The union allows type-punning for efficient access.
+
+### XER Register (Fixed-Point Exception)
+
+```cpp
+struct XERRegister {
+  uint8_t so;  // Summary Overflow
+  uint8_t ov;  // Overflow
+  uint8_t ca;  // Carry
+};
+```
+
+Used by arithmetic instructions (`addc`, `subfe`, etc.).
+
+### Condition Register Field
+
+```cpp
+struct CRRegister {
+  uint8_t lt;  // Less Than
+  uint8_t gt;  // Greater Than
+  uint8_t eq;  // Equal
+  union {
+    uint8_t so;  // Summary Overflow (integer)
+    uint8_t un;  // Unordered (float - NaN)
+  };
+  
+  template <typename T>
+  inline void compare(T left, T right, const XERRegister& xer) {
+    lt = left < right;
+    gt = left > right;
+    eq = left == right;
+    so = xer.so;
+  }
+};
+```
+
+### Vector Register
+
+```cpp
+union alignas(0x10) VRegister {
+  int8_t s8[16];
+  uint8_t u8[16];
+  int16_t s16[8];
+  uint16_t u16[8];
+  int32_t s32[4];
+  uint32_t u32[4];
+  int64_t s64[2];
+  uint64_t u64[2];
+  float f32[4];
+  double f64[2];
+};
+```
+
+## Memory Access
+
+PowerPC uses **big-endian** byte order, while x86-64 and most ARM64 systems use little-endian. ReXGlue handles byte swapping transparently.
+
+### Load Macros
+
+```cpp
+// Load with byte swap (source:include/rex/ppc/memory.h:54)
+#define PPC_LOAD_U8(x)  (*(volatile uint8_t*)(base + (uint32_t)(x) + PPC_PHYS_HOST_OFFSET(x)))
+#define PPC_LOAD_U16(x) __builtin_bswap16(*(volatile uint16_t*)(base + (uint32_t)(x) + ...))
+#define PPC_LOAD_U32(x) __builtin_bswap32(*(volatile uint32_t*)(base + (uint32_t)(x) + ...))
+#define PPC_LOAD_U64(x) __builtin_bswap64(*(volatile uint64_t*)(base + (uint32_t)(x) + ...))
+```
+
+### Store Macros
+
+```cpp
+#define PPC_STORE_U8(x, y)  (*(volatile uint8_t*)(base + (uint32_t)(x) + ...) = (y))
+#define PPC_STORE_U16(x, y) (*(volatile uint16_t*)(base + (uint32_t)(x) + ...) = __builtin_bswap16(y))
+#define PPC_STORE_U32(x, y) (*(volatile uint32_t*)(base + (uint32_t)(x) + ...) = __builtin_bswap32(y))
+#define PPC_STORE_U64(x, y) (*(volatile uint64_t*)(base + (uint32_t)(x) + ...) = __builtin_bswap64(y))
+```
+
+<Note>
+**Physical Heap Offset Workaround**
+
+On Windows, the allocation granularity is 64KB, so the 0x1000-byte file offset for the 0xE0000000 physical heap gets masked away. `PPC_PHYS_HOST_OFFSET()` compensates by adding 0x1000 to addresses ≥ 0xE0000000 (source:include/rex/ppc/memory.h:42).
+</Note>
+
+### MMIO (Memory-Mapped I/O)
+
+Addresses in the range `0x7F000000 - 0x7FFFFFFF` are MMIO (GPU registers, audio, etc.). These go through the `MMIOHandler`:
+
+```cpp
+#define PPC_MM_LOAD_U32(addr) \
+  (PPC_IS_MMIO_ADDR(addr) \
+    ? ({ uint32_t _v; \
+         rex::runtime::MMIOHandler::global_handler()->CheckLoad(addr, &_v); \
+         _v; }) \
+    : __builtin_bswap32(*(volatile uint32_t*)(base + (addr) + ...)))
+```
+
+The recompiler uses MMIO macros when it detects MMIO base addresses in registers.
+
+## Instruction Categories
+
+### Integer Arithmetic
+
+**Addition:**
+```cpp
+// add r3, r4, r5
+r3.u32 = r4.u32 + r5.u32;
+
+// addi r3, r4, 0x10
+r3.u32 = r4.u32 + 0x10;
+
+// addic r3, r4, 0x10  (sets CA)
+ctx.xer.ca = /* carry detection logic */;
+r3.u32 = r4.u32 + 0x10;
+```
+
+**Comparison:**
+```cpp
+// cmpw cr0, r3, r4
+cr0.compare(r3.s32, r4.s32, ctx.xer);
+
+// cmpwi cr0, r3, 0
+cr0.compare(r3.s32, 0, ctx.xer);
+```
+
+### Floating-Point
+
+**Arithmetic:**
+```cpp
+// fadd f1, f2, f3
+f1.f64 = f2.f64 + f3.f64;
+
+// fmul f1, f2, f3
+f1.f64 = f2.f64 * f3.f64;
+
+// fmadd f1, f2, f3, f4  (f1 = f2*f3 + f4)
+f1.f64 = std::fma(f2.f64, f3.f64, f4.f64);
+```
+
+**Rounding Mode:**
+
+The `FPSCRRegister` manages x86-64 MXCSR or ARM64 FPCR rounding modes (source:include/rex/ppc/types.h:468):
+
+```cpp
+struct FPSCRRegister {
+  uint32_t csr;  // Host control/status register
+  
+  static constexpr size_t HostToGuest[] = {
+    kRoundNearest,      // 0 -> 0
+    kRoundDown,         // 1 -> 3
+    kRoundUp,           // 2 -> 2
+    kRoundTowardZero    // 3 -> 1
+  };
+  
+  void storeFromGuest(uint32_t value) {
+    csr &= ~RoundMaskVal;
+    csr |= Platform::GuestToHost[value & kRoundMask];
+    setcsr(csr);
+  }
+};
+```
+
+### Vector/SIMD (AltiVec/VMX)
+
+ReXGlue uses [SIMDe](https://github.com/simd-everywhere/simde) for cross-platform SIMD:
+
+```cpp
+#include <simde/x86/sse4.1.h>
+
+// vadduwm v0, v1, v2  (add 4x uint32)
+v0.v128 = simde_mm_add_epi32(v1.v128, v2.v128);
+
+// vmaxsw v0, v1, v2  (max 4x int32)
+v0.v128 = simde_mm_max_epi32(v1.v128, v2.v128);
+
+// lvx v0, 0, r3  (load vector from memory)
+v0.v128 = simde_mm_loadu_si128((simde__m128i*)(base + r3.u32));
+```
+
+**Custom Vector Helpers:**
+
+Some AltiVec instructions require custom implementations (source:include/rex/ppc/memory.h:343):
+
+```cpp
+// Vector Convert To Unsigned Fixed-Point Word Saturate
+inline simde__m128i simde_mm_vctuxs(simde__m128 src1) {
+  // Clamp to [0, UINT_MAX]
+  simde__m128 clamped = simde_mm_max_ps(src1, simde_mm_setzero_ps());
+  clamped = simde_mm_min_ps(clamped, simde_mm_set1_ps(4294967295.0f));
+  // Convert with saturation logic...
+}
+```
+
+### Branches and Calls
+
+**Unconditional:**
+```cpp
+// b 0x82E00100
+PPC_CALL_FUNC(function_82E00100);
+
+// bl 0x82E00100  (branch and link)
+ctx.lr = /* return address */;
+PPC_CALL_FUNC(function_82E00100);
+```
+
+**Conditional:**
+```cpp
+// beq cr0, 0x82E00100
+if (cr0.eq) {
+  PPC_CALL_FUNC(function_82E00100);
+}
+
+// bne cr0, 0x82E00100
+if (!cr0.eq) {
+  PPC_CALL_FUNC(function_82E00100);
+}
+```
+
+**Indirect:**
+```cpp
+// bctr  (branch to count register)
+PPC_CALL_INDIRECT_FUNC(ctx.ctr.u32);
+
+// bctrl  (branch to count register and link)
+ctx.lr = /* return address */;
+PPC_CALL_INDIRECT_FUNC(ctx.ctr.u32);
+```
+
+### Load/Store
+
+**Byte-swapping loads:**
+```cpp
+// lwz r3, 0x10(r4)  (load word and zero)
+r3.u32 = PPC_LOAD_U32(r4.u32 + 0x10);
+
+// lhz r3, 0x10(r4)  (load halfword and zero)
+r3.u32 = PPC_LOAD_U16(r4.u32 + 0x10);
+
+// lbz r3, 0x10(r4)  (load byte and zero)
+r3.u32 = PPC_LOAD_U8(r4.u32 + 0x10);
+```
+
+**Sign-extending loads:**
+```cpp
+// lha r3, 0x10(r4)  (load halfword algebraic)
+r3.s32 = (int32_t)(int16_t)PPC_LOAD_U16(r4.u32 + 0x10);
+```
+
+**Stores:**
+```cpp
+// stw r3, 0x10(r4)
+PPC_STORE_U32(r4.u32 + 0x10, r3.u32);
+
+// sth r3, 0x10(r4)
+PPC_STORE_U16(r4.u32 + 0x10, r3.u16);
+```
+
+## Special Instructions
+
+### Timebase
+
+```cpp
+// mftb r3  (move from time base)
+r3.u64 = PPC_QUERY_TIMEBASE();
+
+#define PPC_QUERY_TIMEBASE() rex::chrono::Clock::QueryGuestTickCount()
+```
+
+### Synchronization
+
+```cpp
+// lwarx r3, 0, r4  (load word and reserve)
+ctx.reserved.u32 = r4.u32;  // Save reservation address
+r3.u32 = PPC_LOAD_U32(r4.u32);
+
+// stwcx. r3, 0, r4  (store word conditional)
+if (ctx.reserved.u32 == r4.u32) {
+  PPC_STORE_U32(r4.u32, r3.u32);
+  cr0.eq = 1;  // Success
+} else {
+  cr0.eq = 0;  // Failure
+}
+ctx.reserved.u32 = 0;  // Clear reservation
+```
+
+### Traps
+
+Trap instructions generate exceptions (source:include/rex/ppc/context.h:502):
+
+```cpp
+// twi 31, r0, 20  (unconditional trap - debug print)
+inline void ppc_trap(PPCContext& ctx, uint8_t* base, uint16_t trap_type) {
+  switch (trap_type) {
+    case 20:
+    case 26: {  // Debug print
+      auto str = PPC_LOAD_STRING(ctx.r3.u32, ctx.r4.u16);
+      REXCPU_DEBUG("(service trap) {}", str);
+      break;
+    }
+    case 0:
+    case 22:  // Debug break
+      REXCPU_WARN("tw/td trap hit (type {})", trap_type);
+      break;
+  }
+}
+```
+
+## Interrupt Handling
+
+ReXGlue emulates PowerPC interrupt disable/enable via a global lock (source:include/rex/ppc/context.h:464):
+
+```cpp
+// mfmsr r3  (move from machine state register)
+r3.u64 = PPC_CHECK_GLOBAL_LOCK();  // Returns 0x8000 if unlocked
+
+// mtmsr r13  (move to MSR from r13 - disable interrupts)
+PPC_ENTER_GLOBAL_LOCK();
+
+// mtmsr r3  (move to MSR from non-r13 - enable interrupts)
+PPC_LEAVE_GLOBAL_LOCK();
+```
+
+The global lock uses `std::recursive_mutex` and atomic nesting counter.
+
+## setjmp/longjmp
+
+PowerPC `setjmp`/`longjmp` is tricky because the guest `jmp_buf` format is incompatible with the host. ReXGlue uses a mapping table (source:include/rex/ppc/context.h:429):
+
+```cpp
+// Thread-local map: guest_jmp_buf_addr -> host jmp_buf
+inline std::unordered_map<uint32_t, jmp_buf>& get_jmp_buf_map() {
+  static thread_local std::unordered_map<uint32_t, jmp_buf> map;
+  return map;
+}
+
+// setjmp(guest_buf_addr)
+#define ppc_setjmp(guest_buf_addr) \
+  (setjmp(::rex::get_jmp_buf_map()[(guest_buf_addr)]))
+
+// longjmp(guest_buf_addr, val)
+[[noreturn]] inline void ppc_longjmp(uint32_t guest_buf_addr, int val) {
+  auto& map = get_jmp_buf_map();
+  auto it = map.find(guest_buf_addr);
+  if (it != map.end()) {
+    longjmp(it->second, val);
+  }
+  std::abort();  // setjmp was never called
+}
+```
+
+<Note>
+`ppc_setjmp` must be a macro (not a function) so it captures the caller's stack frame. Otherwise, `longjmp` would return to a dead frame.
+</Note>
+
+## Platform Differences
+
+### x86-64 (SSE/AVX)
+
+- Native support for 128-bit SIMD via SSE4.1/AVX
+- `__rdtsc()` for timebase
+- `_mm_getcsr()` / `_mm_setcsr()` for FPSCR
+
+### ARM64 (NEON)
+
+- SIMDe translates x86 intrinsics to NEON
+- `mrs` instruction for timebase
+- `fpcr` register for rounding mode
+
+## Performance Tips
+
+1. **Minimize context access**: Recompiled functions use local variables when possible
+2. **MMIO detection**: The recompiler tracks MMIO base addresses to avoid runtime checks
+3. **SIMD alignment**: Vector loads/stores assume 16-byte alignment when safe
+4. **Inline functions**: Short recompiled functions are marked `inline` for optimization
+
+## See Also
+
+- [Static Recompilation](/concepts/recompilation) - Code generation pipeline
+- [Memory Model](/concepts/memory-model) - Address translation details
+- [Kernel Emulation](/concepts/kernel-emulation) - System calls and interrupts

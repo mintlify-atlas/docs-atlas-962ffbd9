@@ -1,0 +1,412 @@
+---
+title: KernelState
+description: Central kernel state management for the Xbox 360 emulation environment
+---
+
+## Overview
+
+`KernelState` is the central manager for the Xbox 360 kernel emulation environment. It coordinates modules, threads, notifications, and provides access to core subsystems.
+
+**Header:** `rex/system/kernel_state.h`
+
+**Namespace:** `rex::system`
+
+## Class Definition
+
+```cpp
+class KernelState {
+public:
+  explicit KernelState(Runtime* emulator);
+  ~KernelState();
+  
+  static KernelState* shared();
+  
+  // Subsystem accessors
+  Runtime* emulator() const;
+  memory::Memory* memory() const;
+  runtime::Processor* processor() const;
+  rex::filesystem::VirtualFileSystem* file_system() const;
+  
+  // XAM managers
+  xam::AppManager* app_manager() const;
+  xam::ContentManager* content_manager() const;
+  xam::UserProfile* user_profile() const;
+  
+  // Object management
+  util::ObjectTable* object_table();
+  
+  // Title information
+  uint32_t title_id() const;
+  util::XdbfGameData title_xdbf() const;
+  util::XdbfGameData module_xdbf(object_ref<UserModule> exec_module) const;
+  
+  // Process management
+  uint32_t process_type() const;
+  void set_process_type(uint32_t value);
+  uint32_t process_info_block_address() const;
+  
+  // TLS management
+  uint32_t AllocateTLS();
+  void FreeTLS(uint32_t slot);
+  
+  // Termination notifications
+  void RegisterTitleTerminateNotification(uint32_t routine, uint32_t priority);
+  void RemoveTitleTerminateNotification(uint32_t routine);
+  
+  // Module management
+  void RegisterModule(XModule* module);
+  void UnregisterModule(XModule* module);
+  bool RegisterUserModule(object_ref<UserModule> module);
+  void UnregisterUserModule(UserModule* module);
+  bool IsKernelModule(const std::string_view name);
+  object_ref<XModule> GetModule(const std::string_view name, bool user_only = false);
+  
+  object_ref<XThread> LaunchModule(object_ref<UserModule> module);
+  object_ref<UserModule> GetExecutableModule();
+  void SetExecutableModule(object_ref<UserModule> module);
+  object_ref<UserModule> LoadUserModule(const std::string_view name, bool call_entry = true);
+  void UnloadUserModule(const object_ref<UserModule>& module, bool call_entry = true);
+  
+  object_ref<KernelModule> GetKernelModule(const std::string_view name);
+  
+  template <typename T>
+  object_ref<KernelModule> LoadKernelModule();
+  
+  template <typename T>
+  object_ref<T> GetKernelModule(const std::string_view name);
+  
+  void TerminateTitle();
+  
+  // Thread management
+  void RegisterThread(XThread* thread);
+  void UnregisterThread(XThread* thread);
+  void OnThreadExecute(XThread* thread);
+  void OnThreadExit(XThread* thread);
+  object_ref<XThread> GetThreadByID(uint32_t thread_id);
+  
+  // Notification system
+  void RegisterNotifyListener(XNotifyListener* listener);
+  void UnregisterNotifyListener(XNotifyListener* listener);
+  void BroadcastNotification(XNotificationID id, uint32_t data);
+  
+  // DPC list
+  util::NativeList* dpc_list();
+  
+  // Overlapped I/O completion
+  void CompleteOverlapped(uint32_t overlapped_ptr, X_RESULT result);
+  void CompleteOverlappedEx(uint32_t overlapped_ptr, X_RESULT result,
+                           uint32_t extended_error, uint32_t length);
+  void CompleteOverlappedImmediate(uint32_t overlapped_ptr, X_RESULT result);
+  void CompleteOverlappedImmediateEx(uint32_t overlapped_ptr, X_RESULT result,
+                                    uint32_t extended_error, uint32_t length);
+  
+  // Deferred overlapped completion with callbacks
+  void CompleteOverlappedDeferred(
+    std::move_only_function<void()> completion_callback,
+    uint32_t overlapped_ptr,
+    X_RESULT result,
+    std::move_only_function<void()> pre_callback = nullptr,
+    std::move_only_function<void()> post_callback = nullptr
+  );
+  
+  void CompleteOverlappedDeferredEx(
+    std::move_only_function<void()> completion_callback,
+    uint32_t overlapped_ptr,
+    X_RESULT result,
+    uint32_t extended_error,
+    uint32_t length,
+    std::move_only_function<void()> pre_callback = nullptr,
+    std::move_only_function<void()> post_callback = nullptr
+  );
+  
+  // State persistence
+  bool Save(stream::ByteStream* stream);
+  bool Restore(stream::ByteStream* stream);
+};
+```
+
+## Process Types
+
+Constants for process type classification:
+
+```cpp
+constexpr uint32_t X_PROCTYPE_IDLE = 0;
+constexpr uint32_t X_PROCTYPE_USER = 1;
+constexpr uint32_t X_PROCTYPE_SYSTEM = 2;
+```
+
+## Global Accessors
+
+Convenience functions for accessing kernel state:
+
+```cpp
+// Get global kernel state instance
+KernelState* kernel_state();
+
+// Get kernel memory directly
+inline memory::Memory* kernel_memory() {
+  return kernel_state()->memory();
+}
+```
+
+## Kernel Import Trace Macros
+
+Utility macros for logging kernel import function calls:
+
+```cpp
+REXKRNL_IMPORT_TRACE(name, fmt, ...)    // Trace function call
+REXKRNL_IMPORT_RESULT(name, fmt, ...)   // Trace function result
+REXKRNL_IMPORT_FAIL(name, fmt, ...)     // Log function failure
+REXKRNL_IMPORT_WARN(name, fmt, ...)     // Log function warning
+```
+
+## Example Usage
+
+### Accessing Kernel State
+
+```cpp
+#include <rex/system/kernel_state.h>
+
+using namespace rex::system;
+
+// Get global kernel state
+auto* kernel = kernel_state();
+
+// Access subsystems
+auto* memory = kernel->memory();
+auto* processor = kernel->processor();
+auto* vfs = kernel->file_system();
+
+// Get title information
+uint32_t title_id = kernel->title_id();
+auto xdbf_data = kernel->title_xdbf();
+```
+
+### Creating Kernel State
+
+```cpp
+#include <rex/runtime.h>
+#include <rex/system/kernel_state.h>
+
+using namespace rex;
+
+// Create runtime
+auto runtime = std::make_unique<Runtime>();
+
+// Create kernel state
+auto kernel = std::make_unique<system::KernelState>(runtime.get());
+
+// Initialize subsystems with kernel state
+graphics_system->Setup(processor, kernel.get(), app_context, true);
+audio_system->Setup(kernel.get());
+```
+
+### Loading Modules
+
+```cpp
+// Load user module (XEX)
+auto module = kernel->LoadUserModule("game.xex", true);
+
+if (module) {
+  // Set as executable
+  kernel->SetExecutableModule(module);
+  
+  // Launch the module
+  auto thread = kernel->LaunchModule(module);
+}
+
+// Get loaded module
+auto existing = kernel->GetModule("xam.xex");
+```
+
+### Loading Kernel Modules
+
+```cpp
+// Load kernel module by type
+auto xboxkrnl = kernel->LoadKernelModule<XboxkrnlModule>();
+
+// Get loaded kernel module
+auto module = kernel->GetKernelModule<XamModule>("xam.xex");
+
+if (module) {
+  // Use kernel module
+}
+```
+
+### Thread Management
+
+```cpp
+// Get thread by ID
+auto thread = kernel->GetThreadByID(thread_id);
+
+if (thread) {
+  // Work with thread
+}
+
+// Thread lifecycle is managed automatically via:
+// - RegisterThread() - called when thread is created
+// - OnThreadExecute() - called when thread starts executing
+// - OnThreadExit() - called when thread exits
+// - UnregisterThread() - called when thread is destroyed
+```
+
+### TLS Management
+
+```cpp
+// Allocate TLS slot
+uint32_t tls_slot = kernel->AllocateTLS();
+
+// Use TLS slot for thread-local storage
+// ...
+
+// Free TLS slot when done
+kernel->FreeTLS(tls_slot);
+```
+
+### Notification System
+
+```cpp
+// Create notification listener
+class MyListener : public XNotifyListener {
+public:
+  void OnNotification(XNotificationID id, uint32_t data) override {
+    // Handle notification
+  }
+};
+
+auto listener = new MyListener();
+kernel->RegisterNotifyListener(listener);
+
+// Broadcast notification
+kernel->BroadcastNotification(notification_id, data);
+
+// Cleanup
+kernel->UnregisterNotifyListener(listener);
+```
+
+### Title Termination
+
+```cpp
+// Register termination notification
+void OnTerminate(uint32_t priority) {
+  // Cleanup before termination
+}
+
+kernel->RegisterTitleTerminateNotification(
+  reinterpret_cast<uint32_t>(&OnTerminate),
+  priority
+);
+
+// Terminate the title (unloads modules, kills threads)
+kernel->TerminateTitle();  // Does not return if called from guest thread!
+
+// Remove notification
+kernel->RemoveTitleTerminateNotification(
+  reinterpret_cast<uint32_t>(&OnTerminate)
+);
+```
+
+### Overlapped I/O Completion
+
+```cpp
+// Complete overlapped I/O immediately
+kernel->CompleteOverlappedImmediate(overlapped_ptr, X_ERROR_SUCCESS);
+
+// Complete with extended info
+kernel->CompleteOverlappedImmediateEx(
+  overlapped_ptr,
+  X_ERROR_SUCCESS,
+  0,      // extended_error
+  length  // bytes transferred
+);
+
+// Deferred completion with callback
+kernel->CompleteOverlappedDeferred(
+  []() {
+    // Completion work
+  },
+  overlapped_ptr,
+  X_ERROR_SUCCESS,
+  []() { /* pre-callback */ },
+  []() { /* post-callback */ }
+);
+```
+
+### Object Table Access
+
+```cpp
+// Access must be guarded by global critical region
+auto* object_table = kernel->object_table();
+
+// Add object to table
+uint32_t handle = 0;
+object_table->AddObject(object, &handle);
+
+// Retrieve object
+auto obj = object_table->LookupObject(handle);
+
+// Remove object
+object_table->RemoveObject(handle);
+```
+
+### XAM Managers
+
+```cpp
+// Access application manager
+auto* app_mgr = kernel->app_manager();
+
+// Access content manager
+auto* content_mgr = kernel->content_manager();
+
+// Access user profile
+auto* profile = kernel->user_profile();
+profile->SetName("Player1");
+```
+
+### State Persistence
+
+```cpp
+#include <rex/stream/byte_stream.h>
+
+// Save kernel state
+auto stream = std::make_unique<stream::ByteStream>();
+if (kernel->Save(stream.get())) {
+  // State saved successfully
+  stream->WriteToFile("save.dat");
+}
+
+// Restore kernel state
+stream->ReadFromFile("save.dat");
+if (kernel->Restore(stream.get())) {
+  // State restored successfully
+}
+```
+
+### Process Type Management
+
+```cpp
+// Get current process type
+uint32_t proc_type = kernel->process_type();
+
+if (proc_type == X_PROCTYPE_USER) {
+  // User process
+} else if (proc_type == X_PROCTYPE_SYSTEM) {
+  // System process
+}
+
+// Set process type
+kernel->set_process_type(X_PROCTYPE_USER);
+
+// Get process info block address
+uint32_t pib_addr = kernel->process_info_block_address();
+```
+
+## Thread Safety
+
+KernelState uses `rex::thread::global_critical_region` to protect shared data structures. Access to the object table and certain operations must be performed while holding this lock.
+
+## See Also
+
+- [IGraphicsSystem](/api/graphics-system) - Graphics subsystem interface
+- [IAudioSystem](/api/audio-system) - Audio subsystem interface
+- [IInputSystem](/api/input-system) - Input subsystem interface

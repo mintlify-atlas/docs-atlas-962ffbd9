@@ -1,0 +1,542 @@
+---
+title: Xbox 360 Kernel Emulation
+description: How ReXGlue emulates the Xbox 360 operating system and kernel services
+---
+
+## Overview
+
+The Xbox 360 runs a custom operating system based on a stripped-down Windows NT kernel. ReXGlue emulates the kernel APIs (xboxkrnl.exe) and system libraries (xam.xex) to provide a compatible runtime environment for Xbox 360 games.
+
+<Info>
+ReXGlue uses **High-Level Emulation (HLE)** for kernel calls. System functions are reimplemented in native C++ rather than recompiling the kernel itself.
+</Info>
+
+## Kernel Architecture
+
+The `KernelState` (source:include/rex/system/kernel_state.h:111) is the central manager for all kernel emulation:
+
+```cpp
+class KernelState {
+public:
+  Runtime* emulator() const;
+  memory::Memory* memory() const;
+  runtime::Processor* processor() const;
+  
+  // Module Management
+  void RegisterModule(XModule* module);
+  object_ref<XModule> GetModule(const std::string_view name);
+  object_ref<UserModule> LoadUserModule(const std::string_view name);
+  
+  // Thread Management
+  void RegisterThread(XThread* thread);
+  object_ref<XThread> GetThreadByID(uint32_t thread_id);
+  void OnThreadExecute(XThread* thread);
+  void OnThreadExit(XThread* thread);
+  
+  // Object Table (kernel handles)
+  util::ObjectTable* object_table();
+  
+  // System Services
+  xam::AppManager* app_manager() const;
+  xam::ContentManager* content_manager() const;
+  xam::UserProfile* user_profile() const;
+  
+  // Process Information
+  uint32_t process_type() const;
+  uint32_t process_info_block_address() const;
+  
+  // Thread-Local Storage
+  uint32_t AllocateTLS();
+  void FreeTLS(uint32_t slot);
+  
+  // Title Lifecycle
+  void TerminateTitle();
+  
+private:
+  Runtime* emulator_;
+  memory::Memory* memory_;
+  util::ObjectTable object_table_;  // Kernel handle table
+  std::vector<object_ref<KernelModule>> kernel_modules_;
+  std::vector<object_ref<UserModule>> user_modules_;
+};
+```
+
+## Process Information Block
+
+The PIB (source:include/rex/system/kernel_state.h:81) contains process metadata:
+
+```cpp
+struct ProcessInfoBlock {
+  rex::be<uint32_t> unk_00;
+  rex::be<uint32_t> unk_04;  // blink
+  rex::be<uint32_t> unk_08;  // flink
+  rex::be<uint32_t> thread_count;
+  rex::be<uint32_t> kernel_stack_size;
+  rex::be<uint32_t> tls_data_size;
+  rex::be<uint32_t> tls_raw_data_size;
+  rex::be<uint16_t> tls_slot_size;
+  uint8_t process_type;  // X_PROCTYPE_USER, X_PROCTYPE_SYSTEM, etc.
+  rex::be<uint32_t> bitmap[0x20 / 4];  // TLS allocation bitmap
+};
+```
+
+Process types (source:include/rex/system/kernel_state.h:77):
+```cpp
+constexpr uint32_t X_PROCTYPE_IDLE = 0;
+constexpr uint32_t X_PROCTYPE_USER = 1;    // Game process
+constexpr uint32_t X_PROCTYPE_SYSTEM = 2;  // System process
+```
+
+## Kernel Modules
+
+ReXGlue implements Xbox 360 system libraries:
+
+### xboxkrnl.exe (Kernel)
+
+Core OS functions:
+- **Threading**: `NtCreateThread`, `KeWaitForSingleObject`, `KePulseEvent`
+- **Memory**: `NtAllocateVirtualMemory`, `NtFreeVirtualMemory`, `NtProtectVirtualMemory`
+- **I/O**: `NtCreateFile`, `NtReadFile`, `NtWriteFile`, `NtQueryDirectoryFile`
+- **Synchronization**: Mutexes, semaphores, events, timers
+- **Exceptions**: `RtlRaiseException`, `KeBugCheck`
+
+### xam.xex (Xbox Application Manager)
+
+High-level services:
+- **User Profiles**: `XamUserGetSigninState`, `XamUserGetName`
+- **Content**: `XamContentCreate`, `XamContentGetThumbnail`
+- **Networking**: `XamNetGetTitleOpaqueId`, `XamNetGetEthernetLinkStatus`
+- **UI**: `XamShowMessageBoxUI`, `XamShowKeyboardUI`
+- **Achievements**: `XamUserWriteAchievements`, `XamUserCreateAchievementEnumerator`
+
+### xbdm.xex (Xbox Debug Monitor)
+
+Debugger support (usually stubbed).
+
+## Object Table
+
+Kernel handles are managed by the `ObjectTable` (source:include/rex/system/kernel_state.h:132):
+
+```cpp
+class ObjectTable {
+public:
+  X_STATUS AddHandle(XObject* object, X_HANDLE* out_handle);
+  object_ref<XObject> LookupObject(X_HANDLE handle);
+  X_STATUS RemoveHandle(X_HANDLE handle);
+  
+  template <typename T>
+  object_ref<T> LookupObject(X_HANDLE handle) {
+    auto obj = LookupObject(handle);
+    return object_ref<T>(reinterpret_cast<T*>(obj.release()));
+  }
+};
+```
+
+**Kernel Object Types:**
+- `XThread` - Guest thread
+- `XEvent` - Event object (manual/auto-reset)
+- `XSemaphore` - Counting semaphore
+- `XMutant` - Mutex (called "mutant" in NT kernel)
+- `XTimer` - Waitable timer
+- `XFile` - File handle
+- `XSocket` - Network socket
+- `XModule` - Loaded module (DLL/XEX)
+
+Each object has a reference count and can be waited on (some types).
+
+## Threading Model
+
+### XThread
+
+Each guest thread is represented by `XThread`:
+
+```cpp
+class XThread : public XObject {
+public:
+  uint32_t thread_id() const;
+  uint32_t guest_thread() const;  // XTHREAD structure address
+  
+  bool Create();
+  X_STATUS Exit(int exit_code);
+  X_STATUS Terminate(int exit_code);
+  
+  X_STATUS Suspend(uint32_t* out_suspend_count);
+  X_STATUS Resume(uint32_t* out_suspend_count);
+  
+  void DeliverAPCs();
+  
+private:
+  PPCContext* context_;          // CPU state
+  uint32_t guest_thread_;        // Address of XTHREAD
+  uint32_t thread_state_address_; // Thread-local storage
+  std::thread native_thread_;    // Host OS thread
+};
+```
+
+### Thread Creation Flow
+
+1. Game calls `NtCreateThread(entry_point, ...)`
+2. ReXGlue allocates `XTHREAD` structure in guest memory
+3. Creates `XThread` object and adds to object table
+4. Spawns native host thread via `std::thread`
+5. Host thread calls `Processor::Execute(thread_state, entry_point)`
+6. Recompiled guest code executes in host thread
+
+### Context Switching
+
+ReXGlue uses **cooperative multithreading** via native host threads:
+- Each guest thread = one host thread
+- Host OS scheduler handles preemption
+- No PowerPC context switches needed
+
+**Advantages:**
+- Leverages host OS scheduler
+- True parallelism on multi-core systems
+- No complex context save/restore
+
+**Disadvantages:**
+- Guest timing may differ from real hardware
+- Race conditions if game relies on Xbox 360 scheduler quirks
+
+## Synchronization Primitives
+
+### Events
+
+```cpp
+class XEvent : public XObject {
+public:
+  void Set();    // Signal the event
+  void Pulse();  // Signal and immediately reset
+  void Reset();  // Clear the event
+  
+  bool Wait(uint64_t timeout_ms);
+  
+private:
+  bool manual_reset_;  // Manual or auto-reset
+  std::condition_variable cond_;
+  std::mutex mutex_;
+};
+```
+
+### Mutexes (Mutants)
+
+```cpp
+class XMutant : public XObject {
+public:
+  X_STATUS ReleaseMutant(int* out_previous_count);
+  bool Wait(uint64_t timeout_ms);
+  
+private:
+  std::recursive_mutex mutex_;
+  uint32_t owner_thread_id_;
+};
+```
+
+### Semaphores
+
+```cpp
+class XSemaphore : public XObject {
+public:
+  X_STATUS Release(int count, int* out_previous_count);
+  bool Wait(uint64_t timeout_ms);
+  
+private:
+  std::counting_semaphore<> semaphore_;
+};
+```
+
+## File I/O
+
+ReXGlue translates Xbox 360 file paths to the host filesystem via `VirtualFileSystem`:
+
+### Path Mapping
+
+```cpp
+// Xbox 360 paths:
+// "game:\\data\\level1.map" -> "<game_directory>/data/level1.map"
+// "d:\\saves\\profile.dat" -> "<content_root>/00000001/saves/profile.dat"
+// "hdd1:\\cache\\..."      -> "<cache_directory>/..."
+```
+
+### NtCreateFile
+
+```cpp
+X_STATUS NtCreateFile(X_HANDLE* handle_out, uint32_t desired_access,
+                      X_OBJECT_ATTRIBUTES* obj_attrs, X_IO_STATUS_BLOCK* io_status,
+                      uint64_t* allocation_size, uint32_t file_attributes,
+                      uint32_t share_access, uint32_t creation_disposition,
+                      uint32_t create_options) {
+  auto path = obj_attrs->name.value();  // Wide string
+  auto vfs_path = vfs->ResolvePath(path);
+  
+  auto file = vfs->OpenFile(vfs_path, desired_access, creation_disposition);
+  if (!file) {
+    return X_STATUS_NO_SUCH_FILE;
+  }
+  
+  auto xfile = object_ref<XFile>(new XFile(file));
+  kernel_state()->object_table()->AddHandle(xfile, handle_out);
+  return X_STATUS_SUCCESS;
+}
+```
+
+### NtReadFile / NtWriteFile
+
+```cpp
+X_STATUS NtReadFile(X_HANDLE handle, X_HANDLE event,
+                    uint32_t apc_routine, uint32_t apc_context,
+                    uint32_t io_status_block, uint32_t buffer,
+                    uint32_t buffer_length, uint64_t* byte_offset) {
+  auto file = kernel_state()->object_table()->LookupObject<XFile>(handle);
+  if (!file) {
+    return X_STATUS_INVALID_HANDLE;
+  }
+  
+  auto host_buffer = memory()->TranslateVirtual(buffer);
+  size_t bytes_read = file->Read(host_buffer, buffer_length, byte_offset);
+  
+  // Write io_status_block
+  auto io_status = memory()->TranslateVirtual<X_IO_STATUS_BLOCK*>(io_status_block);
+  io_status->status = X_STATUS_SUCCESS;
+  io_status->information = bytes_read;
+  
+  return X_STATUS_SUCCESS;
+}
+```
+
+## Memory Management
+
+### NtAllocateVirtualMemory
+
+```cpp
+X_STATUS NtAllocateVirtualMemory(uint32_t* base_address, uint32_t* region_size,
+                                 uint32_t allocation_type, uint32_t protect) {
+  auto heap = memory()->LookupHeap(*base_address);
+  if (!heap) {
+    return X_STATUS_INVALID_PARAMETER;
+  }
+  
+  uint32_t allocated_address = 0;
+  bool success = heap->Alloc(*region_size, 0x1000, allocation_type, 
+                             protect, false, &allocated_address);
+  
+  if (!success) {
+    return X_STATUS_NO_MEMORY;
+  }
+  
+  *base_address = allocated_address;
+  return X_STATUS_SUCCESS;
+}
+```
+
+### NtFreeVirtualMemory
+
+```cpp
+X_STATUS NtFreeVirtualMemory(uint32_t* base_address, uint32_t* region_size,
+                             uint32_t free_type) {
+  auto heap = memory()->LookupHeap(*base_address);
+  if (!heap) {
+    return X_STATUS_INVALID_PARAMETER;
+  }
+  
+  if (free_type == kMemoryDecommit) {
+    heap->Decommit(*base_address, *region_size);
+  } else {
+    heap->Release(*base_address, region_size);
+  }
+  
+  return X_STATUS_SUCCESS;
+}
+```
+
+## Interrupt Request Level (IRQL)
+
+The Xbox 360 kernel uses **IRQL** to control interrupt priority (source:include/rex/system/processor.h:43):
+
+```cpp
+enum class Irql : uint32_t {
+  PASSIVE = 0,   // Normal execution
+  APC = 1,       // Asynchronous procedure calls
+  DISPATCH = 2,  // Scheduler/DPCs
+  DPC = 3,       // Deferred procedure calls
+};
+```
+
+ReXGlue tracks IRQL per-CPU:
+
+```cpp
+class Processor {
+public:
+  Irql RaiseIrql(Irql new_value) {
+    Irql old_value = current_irql();
+    irql_.store(static_cast<uint32_t>(new_value));
+    return old_value;
+  }
+  
+  void LowerIrql(Irql old_value) {
+    irql_.store(static_cast<uint32_t>(old_value));
+  }
+  
+private:
+  std::atomic<uint32_t> irql_{static_cast<uint32_t>(Irql::PASSIVE)};
+};
+```
+
+Raising IRQL disables certain interrupts and thread switches.
+
+## Deferred Procedure Calls (DPCs)
+
+DPCs allow low-priority work to execute asynchronously (source:include/rex/system/kernel_state.h:184):
+
+```cpp
+util::NativeList* dpc_list() { return &dpc_list_; }
+```
+
+The kernel maintains a DPC queue processed by a dedicated dispatcher thread.
+
+## Overlapped I/O
+
+Asynchronous I/O operations use `OVERLAPPED` structures (source:include/rex/system/kernel_state.h:186):
+
+```cpp
+void CompleteOverlapped(uint32_t overlapped_ptr, X_RESULT result) {
+  auto overlapped = memory()->TranslateVirtual<X_OVERLAPPED*>(overlapped_ptr);
+  overlapped->result = result;
+  overlapped->length = 0;
+  
+  // Signal event if specified
+  if (overlapped->event) {
+    auto event = object_table()->LookupObject<XEvent>(overlapped->event);
+    if (event) {
+      event->Set();
+    }
+  }
+}
+
+void CompleteOverlappedDeferred(
+    std::move_only_function<void()> completion_callback,
+    uint32_t overlapped_ptr, X_RESULT result) {
+  // Queue work on dispatch thread
+  dispatch_queue_.push_back([=, cb = std::move(completion_callback)]() {
+    cb();
+    CompleteOverlapped(overlapped_ptr, result);
+  });
+  dispatch_cond_.notify_one();
+}
+```
+
+This allows network I/O, file I/O, etc. to complete asynchronously without blocking the game thread.
+
+## Exception Handling
+
+### Structured Exception Handling (SEH)
+
+ReXGlue uses native SEH on Windows and signal handlers on POSIX:
+
+```cpp
+void SetupExceptionHandlers() {
+#if REX_PLATFORM_WIN32
+  AddVectoredExceptionHandler(1, VectoredExceptionHandler);
+#else
+  struct sigaction sa = {};
+  sa.sa_sigaction = SignalHandler;
+  sa.sa_flags = SA_SIGINFO;
+  sigaction(SIGSEGV, &sa, nullptr);
+  sigaction(SIGILL, &sa, nullptr);
+#endif
+}
+```
+
+Access violations (e.g., writing to protected physical memory) trigger callbacks for cache invalidation.
+
+### Guest Exceptions
+
+PowerPC exceptions are emulated:
+- **Trap instructions** (`tw`, `twi`) call `ppc_trap()`
+- **Illegal instructions** throw `std::runtime_error`
+- **Floating-point exceptions** controlled by FPSCR
+
+## System Services
+
+### App Manager
+
+```cpp
+class AppManager {
+public:
+  uint32_t GetTitleId();  // Title ID from XEX
+  void SetLocale(uint32_t locale);  // Language setting
+};
+```
+
+### Content Manager
+
+Manages save data, DLC, and user content:
+
+```cpp
+class ContentManager {
+public:
+  X_RESULT CreateContent(const std::string& path, ContentType type);
+  X_RESULT EnumerateContent(ContentType type, std::vector<ContentData>& out);
+};
+```
+
+### User Profile
+
+```cpp
+class UserProfile {
+public:
+  std::string GetName();
+  uint64_t GetXUID();  // Xbox User ID
+  X_RESULT ReadSetting(uint32_t setting_id, Setting& out);
+  X_RESULT WriteSetting(uint32_t setting_id, const Setting& value);
+};
+```
+
+## Import Resolution
+
+When a game XEX imports a kernel function:
+
+1. **Symbol lookup**: Import name (e.g., `"NtCreateFile"`) is looked up
+2. **Ordinal resolution**: Alternatively, import by ordinal (e.g., `ordinal 400`)
+3. **Thunk generation**: Recompiler generates a thunk:
+   ```cpp
+   PPC_FUNC_IMPL(__imp_NtCreateFile) {
+     PPC_FUNC_PROLOGUE();
+     NtCreateFile_impl(ctx, base);  // Call native implementation
+   }
+   ```
+4. **Function table registration**: Host function pointer stored in function table
+
+## Kernel Tracing
+
+ReXGlue provides logging macros for debugging kernel calls (source:include/rex/system/kernel_state.h:40):
+
+```cpp
+#define REXKRNL_IMPORT_TRACE(name, fmt, ...) \
+  REXKRNL_TRACE("[" name "] " fmt, ##__VA_ARGS__)
+
+#define REXKRNL_IMPORT_RESULT(name, fmt, ...) \
+  REXKRNL_TRACE("[" name "] -> " fmt, ##__VA_ARGS__)
+
+#define REXKRNL_IMPORT_FAIL(name, fmt, ...) \
+  REXKRNL_WARN("[" name "] FAILED: " fmt, ##__VA_ARGS__)
+```
+
+**Example:**
+```cpp
+REXKRNL_IMPORT_TRACE("NtCreateFile", "path={}", path);
+// ... implementation ...
+REXKRNL_IMPORT_RESULT("NtCreateFile", "handle={:#x}", handle);
+```
+
+Output:
+```
+[NtCreateFile] path="game:\data\level1.map"
+[NtCreateFile] -> handle=0x10
+```
+
+## See Also
+
+- [Memory Model](/concepts/memory-model) - System heap and kernel allocations
+- [PowerPC Emulation](/concepts/ppc-emulation) - Context structure and execution
+- [Static Recompilation](/concepts/recompilation) - Import thunk generation

@@ -1,0 +1,355 @@
+---
+title: Runtime Setup
+description: Configuring Runtime with backend systems
+---
+
+The `Runtime` class is the core subsystem coordinator for recompiled applications. It manages memory, file system, kernel state, and hardware interfaces (graphics, audio, input). Backend systems are injected via `RuntimeConfig` to keep the runtime library decoupled from concrete implementations.
+
+## RuntimeConfig Structure
+
+Defined in `rex/runtime.h:53-58`:
+
+```cpp
+struct RuntimeConfig {
+  std::unique_ptr<system::IGraphicsSystem> graphics;
+  std::function<std::unique_ptr<system::IAudioSystem>(runtime::Processor*)> audio_factory;
+  std::function<std::unique_ptr<system::IInputSystem>(bool tool_mode)> input_factory;
+  bool tool_mode = false;
+};
+```
+
+### Fields
+
+- **graphics**: Graphics backend instance (Vulkan, OpenGL, etc.)
+- **audio_factory**: Factory function for audio backend (requires Processor at construction)
+- **input_factory**: Factory function for input backend (depends on tool_mode)
+- **tool_mode**: If true, skips GPU initialization for analysis tools
+
+## Backend Injection
+
+Backends are configured in the `OnPreSetup()` hook before `Runtime::Setup()` is called.
+
+### Basic Configuration
+
+```cpp
+class MyGameApp : public rex::ReXApp {
+ protected:
+  void OnPreSetup(RuntimeConfig& config) override {
+    // Inject Vulkan graphics backend
+    config.graphics = REX_GRAPHICS_BACKEND(
+        rex::graphics::vulkan::VulkanGraphicsSystem);
+    
+    // Inject SDL audio backend
+    config.audio_factory = REX_AUDIO_BACKEND(
+        rex::audio::sdl::SDLAudioSystem);
+    
+    // Inject SDL input backend
+    config.input_factory = REX_INPUT_BACKEND(
+        rex::input::sdl::SetupSDLInput);
+  }
+};
+```
+
+See `rex/runtime.h:65-73` for helper macro definitions.
+
+## Helper Macros
+
+ReXGlue provides convenience macros to reduce boilerplate:
+
+### REX_GRAPHICS_BACKEND
+
+```cpp
+#define REX_GRAPHICS_BACKEND(Type) std::make_unique<Type>()
+```
+
+Expands to construct the graphics system directly:
+
+```cpp
+config.graphics = std::make_unique<rex::graphics::vulkan::VulkanGraphicsSystem>();
+```
+
+See `rex/runtime.h:65`
+
+### REX_AUDIO_BACKEND
+
+```cpp
+#define REX_AUDIO_BACKEND(Type) \
+  [](::rex::runtime::Processor* _proc) -> std::unique_ptr<::rex::system::IAudioSystem> { \
+    return Type::Create(_proc); \
+  }
+```
+
+Creates a lambda that captures the Processor pointer:
+
+```cpp
+config.audio_factory = [](rex::runtime::Processor* proc) {
+  return rex::audio::sdl::SDLAudioSystem::Create(proc);
+};
+```
+
+See `rex/runtime.h:66-69`
+
+### REX_INPUT_BACKEND
+
+```cpp
+#define REX_INPUT_BACKEND(SetupFunc) \
+  [](bool _tool_mode) -> std::unique_ptr<::rex::system::IInputSystem> { \
+    return SetupFunc(_tool_mode); \
+  }
+```
+
+Wraps a setup function that takes tool_mode:
+
+```cpp
+config.input_factory = [](bool tool_mode) {
+  return rex::input::sdl::SetupSDLInput(tool_mode);
+};
+```
+
+See `rex/runtime.h:70-73`
+
+## Backend Interfaces
+
+All backends implement abstract interfaces defined in `rex/system/interfaces/`.
+
+### IGraphicsSystem
+
+```cpp
+class IGraphicsSystem {
+ public:
+  virtual ~IGraphicsSystem() = default;
+  virtual X_STATUS Setup(runtime::Processor* processor, 
+                         KernelState* kernel_state,
+                         ui::WindowedAppContext* app_context, 
+                         bool with_presentation) = 0;
+  virtual void Shutdown() = 0;
+};
+```
+
+See `rex/system/interfaces/graphics.h:29-35`
+
+### IAudioSystem
+
+```cpp
+class IAudioSystem {
+ public:
+  virtual ~IAudioSystem() = default;
+  virtual X_STATUS Setup(KernelState* kernel_state) = 0;
+  virtual void Shutdown() = 0;
+};
+```
+
+See `rex/system/interfaces/audio.h:22-27`
+
+### IInputSystem
+
+```cpp
+class IInputSystem {
+ public:
+  virtual ~IInputSystem() = default;
+  virtual X_STATUS Setup() = 0;
+  virtual void Shutdown() = 0;
+};
+```
+
+See `rex/system/interfaces/input.h:18-23`
+
+## Available Backends
+
+ReXGlue SDK includes these backend implementations:
+
+### Graphics Backends
+
+| Backend | Class | Description |
+|---------|-------|-------------|
+| Vulkan | `rex::graphics::vulkan::VulkanGraphicsSystem` | Modern Vulkan renderer (recommended) |
+| OpenGL | `rex::graphics::gl::GLGraphicsSystem` | Legacy OpenGL 4.5+ renderer |
+
+### Audio Backends
+
+| Backend | Class | Description |
+|---------|-------|-------------|
+| SDL | `rex::audio::sdl::SDLAudioSystem` | Cross-platform SDL2 audio |
+| Null | `rex::audio::null::NullAudioSystem` | Silent audio (testing) |
+
+### Input Backends
+
+| Backend | Function | Description |
+|---------|----------|-------------|
+| SDL | `rex::input::sdl::SetupSDLInput` | Cross-platform SDL2 input |
+| Null | `rex::input::null::SetupNullInput` | No-op input (testing) |
+
+## Tool Mode
+
+Setting `config.tool_mode = true` disables graphics initialization for headless analysis tools:
+
+```cpp
+void OnPreSetup(RuntimeConfig& config) override {
+  config.tool_mode = true;  // Skip GPU init
+  config.graphics = nullptr;  // No graphics
+  config.audio_factory = REX_AUDIO_BACKEND(rex::audio::null::NullAudioSystem);
+  config.input_factory = REX_INPUT_BACKEND(rex::input::null::SetupNullInput);
+}
+```
+
+Useful for:
+- Static analysis tools
+- Headless servers
+- Automated testing
+- CI/CD environments
+
+## Runtime Construction
+
+The Runtime is constructed with filesystem paths:
+
+```cpp
+Runtime::Runtime(
+    const std::filesystem::path& game_data_root,
+    const std::filesystem::path& user_data_root = {},
+    const std::filesystem::path& update_data_root = {})
+```
+
+See `rex/runtime.h:85-87`
+
+### Path Configuration
+
+Paths are configured via the `OnConfigurePaths()` hook before Runtime construction:
+
+```cpp
+void OnConfigurePaths(PathConfig& paths) override {
+  // Defaults are already set from CLI args
+  // Override if needed:
+  paths.game_data_root = "/opt/my_game/data";
+  paths.user_data_root = std::filesystem::path(std::getenv("HOME")) / ".my_game";
+}
+```
+
+### PathConfig Structure
+
+```cpp
+struct PathConfig {
+  std::filesystem::path game_data_root;    // Game assets (read-only)
+  std::filesystem::path user_data_root;    // Save files, configs
+  std::filesystem::path update_data_root;  // Patches, DLC
+};
+```
+
+See `rex/rex_app.h:47-51`
+
+## Runtime Setup Process
+
+After configuration, `Runtime::Setup()` initializes subsystems in order:
+
+<Steps>
+  <Step title="Memory Initialization">
+    Virtual address space is allocated for PPC guest code and data.
+  </Step>
+  
+  <Step title="Processor Setup">
+    PPC processor state and IRQL synchronization primitives.
+  </Step>
+  
+  <Step title="Virtual File System">
+    VFS mounts:
+    - `game:` → game_data_root
+    - `d:` → game_data_root (alias)
+    - `update:` → update_data_root
+  </Step>
+  
+  <Step title="Export Resolver">
+    Import resolution for guest code variable access.
+  </Step>
+  
+  <Step title="Kernel State">
+    Kernel objects, threading subsystem, synchronization primitives.
+  </Step>
+  
+  <Step title="Graphics System">
+    Graphics backend Setup() is called (if provided and not tool_mode).
+  </Step>
+  
+  <Step title="Audio System">
+    Audio factory is invoked with Processor*, backend Setup() is called.
+  </Step>
+  
+  <Step title="Input System">
+    Input factory is invoked with tool_mode flag, backend Setup() is called.
+  </Step>
+</Steps>
+
+## Runtime Accessors
+
+Access subsystems through Runtime methods:
+
+```cpp
+void OnPostSetup() override {
+  Runtime* rt = runtime();
+  
+  // Subsystems
+  auto* memory = rt->memory();
+  auto* vfs = rt->file_system();
+  auto* kernel = rt->kernel_state();
+  auto* graphics = rt->graphics_system();
+  auto* audio = rt->audio_system();
+  auto* input = rt->input_system();
+  
+  // Processor and export resolver
+  auto* processor = rt->processor();
+  auto* exports = rt->export_resolver();
+  
+  // Paths
+  const auto& game_root = rt->game_data_root();
+  const auto& user_root = rt->user_data_root();
+}
+```
+
+See `rex/runtime.h:98-113`
+
+## Advanced: Custom Backends
+
+You can implement custom backends by inheriting the interface classes:
+
+```cpp
+namespace my_game {
+
+class CustomAudioSystem : public rex::system::IAudioSystem {
+ public:
+  static std::unique_ptr<IAudioSystem> Create(rex::runtime::Processor* proc) {
+    return std::make_unique<CustomAudioSystem>(proc);
+  }
+  
+  X_STATUS Setup(rex::system::KernelState* kernel) override {
+    // Your audio setup
+    return X_STATUS_SUCCESS;
+  }
+  
+  void Shutdown() override {
+    // Cleanup
+  }
+  
+ private:
+  CustomAudioSystem(rex::runtime::Processor* proc) : processor_(proc) {}
+  rex::runtime::Processor* processor_;
+};
+
+}  // namespace my_game
+```
+
+Then inject it:
+
+```cpp
+void OnPreSetup(RuntimeConfig& config) override {
+  config.audio_factory = REX_AUDIO_BACKEND(my_game::CustomAudioSystem);
+}
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="ReXApp Base Class" icon="code" href="/app/rexapp">
+    Learn about the application framework
+  </Card>
+  <Card title="Custom Hooks" icon="hook" href="/app/custom-hooks">
+    Customize behavior with virtual hooks
+  </Card>
+</CardGroup>

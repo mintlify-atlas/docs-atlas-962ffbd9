@@ -1,0 +1,437 @@
+---
+title: Platform Support
+description: Platform-specific considerations for Windows and Linux
+---
+
+## Overview
+
+ReXGlue supports Windows and Linux on AMD64 (x86-64) architecture. This guide covers platform-specific build options, runtime differences, and cross-platform considerations.
+
+## Supported Platforms
+
+### Windows (win-amd64)
+
+- **OS**: Windows 10/11 (64-bit)
+- **Compiler**: Clang 18+ (MSVC ABI compatible)
+- **Graphics**: Direct3D 12 (default), Vulkan (optional)
+- **Architecture**: x86-64 only
+
+### Linux (linux-amd64)
+
+- **OS**: Ubuntu 20.04+, Debian 11+, Arch Linux, or compatible
+- **Compiler**: Clang 18+
+- **Graphics**: Vulkan (default), Direct3D 12 not available
+- **Architecture**: x86-64 only
+
+### Unsupported Platforms
+
+- **macOS**: Not currently supported (would require significant porting effort)
+- **ARM64**: Partially supported in code but not tested
+- **32-bit**: Explicitly rejected at build time
+
+Defined in `/home/daytona/workspace/source/CMakeLists.txt:49-51`
+
+## Platform Detection
+
+### Build-Time Detection
+
+ReXGlue automatically detects the platform during CMake configuration:
+
+```cmake
+if(WIN32)
+    set(REX_PLATFORM "win-amd64")
+    add_compile_definitions(REX_PLATFORM_WINDOWS=1)
+elseif(UNIX AND NOT APPLE)
+    set(REX_PLATFORM "linux-amd64")
+    add_compile_definitions(REX_PLATFORM_LINUX=1)
+endif()
+```
+
+Defined in `/home/daytona/workspace/source/CMakeLists.txt:80-88`
+
+### Runtime Platform Macros
+
+In C++ code, use these preprocessor macros:
+
+```cpp
+#include <rex/platform.h>
+
+#if REX_PLATFORM_WIN32
+    // Windows-specific code
+#elif REX_PLATFORM_LINUX
+    // Linux-specific code
+#endif
+```
+
+Available macros:
+- `REX_PLATFORM_WIN32` - Windows
+- `REX_PLATFORM_LINUX` - Linux (generic)
+- `REX_PLATFORM_GNU_LINUX` - GNU/Linux specifically
+- `REX_PLATFORM_ANDROID` - Android (Linux variant)
+- `REX_PLATFORM_MAC` - macOS (not supported)
+
+Defined in `/home/daytona/workspace/source/include/rex/platform.h:31-61`
+
+### Architecture Detection
+
+```cpp
+#if REX_ARCH_AMD64
+    // x86-64 code
+#elif REX_ARCH_ARM64
+    // ARM64 code (experimental)
+#endif
+```
+
+Defined in `/home/daytona/workspace/source/include/rex/platform.h:77-85`
+
+## Graphics Backend Selection
+
+### Windows: D3D12 vs Vulkan
+
+On Windows, you can choose between Direct3D 12 (default) and Vulkan:
+
+```bash
+# D3D12 only (default)
+cmake -B build -DREXGLUE_USE_D3D12=ON -DREXGLUE_USE_VULKAN=OFF
+
+# Vulkan only
+cmake -B build -DREXGLUE_USE_D3D12=OFF -DREXGLUE_USE_VULKAN=ON
+
+# Both backends (for runtime selection)
+cmake -B build -DREXGLUE_USE_D3D12=ON -DREXGLUE_USE_VULKAN=ON
+```
+
+**D3D12 advantages**:
+- Native Windows API, better driver support
+- Lower CPU overhead on Windows
+- Better integration with Windows debugging tools
+
+**Vulkan advantages**:
+- Cross-platform code path (same as Linux)
+- More explicit control over GPU resources
+- Better for testing cross-platform behavior
+
+### Linux: Vulkan Only
+
+On Linux, only Vulkan is available:
+
+```bash
+# Vulkan is ON by default on Linux
+cmake -B build
+
+# Explicitly enable
+cmake -B build -DREXGLUE_USE_VULKAN=ON
+```
+
+Defined in `/home/daytona/workspace/source/CMakeLists.txt:20-30`
+
+### Runtime Graphics Backend Check
+
+```cpp
+#include <rex/platform.h>
+
+#if REX_HAS_D3D12
+    // D3D12 backend available
+#endif
+
+#if REX_HAS_VULKAN
+    // Vulkan backend available
+#endif
+```
+
+Defined in `/home/daytona/workspace/source/src/graphics/CMakeLists.txt:132-142`
+
+## Platform-Specific Build Options
+
+### Large Code Model (Linux Only)
+
+Linux builds use the large code model to support executables over 35MB:
+
+```cmake
+if(NOT WIN32)
+    add_compile_options(-mcmodel=large)
+    set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+endif()
+```
+
+Defined in `/home/daytona/workspace/source/CMakeLists.txt:60-66`
+
+**Reason**: Recompiled Xbox 360 executables can exceed 100MB, requiring 64-bit absolute addressing.
+
+**Windows**: Uses default code model (large is implicit on Win64).
+
+### Position-Independent Code
+
+Linux builds use PIE (Position-Independent Executable):
+
+```cmake
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)  # Linux only
+```
+
+**Benefits**:
+- ASLR (Address Space Layout Randomization) support
+- Required for shared libraries
+- Better security
+
+**Windows**: PIE is handled automatically by MSVC/Clang.
+
+## Compiler Differences
+
+### Clang on Windows
+
+Windows builds use Clang with MSVC ABI compatibility:
+
+```bash
+# Use clang-cl (Clang with MSVC frontend)
+cmake -B build -T ClangCL
+
+# Or use Clang directly with MSVC ABI
+cmake -B build -DCMAKE_CXX_COMPILER=clang++
+```
+
+**Note**: MinGW is **not supported**. Use Clang with MSVC runtime.
+
+### GCC Not Supported
+
+ReXGlue **requires Clang 18+** on all platforms:
+
+```cmake
+if(NOT CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+    message(FATAL_ERROR "ReXGlue requires Clang compiler")
+endif()
+```
+
+Defined in `/home/daytona/workspace/source/CMakeLists.txt:40-42`
+
+**Reason**: ReXGlue relies on Clang-specific code generation and C++23 features.
+
+## Platform-Specific APIs
+
+### Path Separators
+
+```cpp
+#include <rex/platform.h>
+
+const char kPathSeparator;        // '\\' on Windows, '/' on Linux
+const char kGuestPathSeparator;   // Always '\\' (Xbox 360 uses Windows paths)
+```
+
+Defined in `/home/daytona/workspace/source/include/rex/platform.h:125-132`
+
+### File System
+
+```cpp
+#include <filesystem>
+
+// Cross-platform path handling
+std::filesystem::path gamePath = "D:\\Games\\MyGame";  // Windows
+std::filesystem::path gamePath = "/mnt/games/MyGame";  // Linux
+
+// Use rex::kPathSeparator for runtime path construction
+std::string path = "game" + std::string(1, rex::kPathSeparator) + "data";
+```
+
+### Threading
+
+ReXGlue uses C++23 `<thread>` and `<mutex>` for cross-platform threading:
+
+```cpp
+#include <rex/thread.h>  // Platform-abstracted threading primitives
+
+// Cross-platform event
+rex::threading::Event event;
+event.Set();
+event.Wait();
+```
+
+## Exception Handling
+
+### Windows: Structured Exception Handling (SEH)
+
+Windows uses SEH for exception handlers:
+
+```cpp
+#if REX_PLATFORM_WIN32
+    __try {
+        // Recompiled code
+    } __except (ExceptionFilter(GetExceptionInformation())) {
+        // Handle exception
+    }
+#endif
+```
+
+### Linux: Signal Handlers
+
+Linux uses POSIX signals:
+
+```cpp
+#if REX_PLATFORM_LINUX
+#include <signal.h>
+
+void SigSegvHandler(int sig, siginfo_t* info, void* context) {
+    // Handle SIGSEGV
+}
+
+struct sigaction sa;
+sa.sa_sigaction = SigSegvHandler;
+sa.sa_flags = SA_SIGINFO;
+sigaction(SIGSEGV, &sa, nullptr);
+#endif
+```
+
+ReXGlue abstracts this with `rex::arch::ExceptionHandler` (see [Exception Handlers](/advanced/exception-handlers)).
+
+## Memory Mapping
+
+### Guest Memory Location
+
+ReXGlue maps Xbox 360 guest memory at a fixed host address:
+
+- **Address**: `0x100000000` (4GB boundary)
+- **Size**: Up to 512MB (Xbox 360 physical memory)
+- **Mapping**: Direct pointer arithmetic for fast access
+
+```cpp
+// Guest address 0x82000000 maps to host address:
+uintptr_t host_addr = 0x100000000 + 0x82000000;
+```
+
+**Platform notes**:
+- **Windows**: Uses `VirtualAlloc` with `MEM_RESERVE | MEM_COMMIT`
+- **Linux**: Uses `mmap` with `MAP_FIXED | MAP_ANONYMOUS`
+
+**Conflict**: This is why AddressSanitizer (ASan) is disabled - it conflicts with the fixed mapping.
+
+## Build Output Directories
+
+Builds output to platform-specific directories:
+
+```
+out/
+├── win-amd64/          # Windows builds
+│   ├── Debug/
+│   ├── Release/
+│   └── RelWithDebInfo/
+└── linux-amd64/        # Linux builds
+    ├── Debug/
+    ├── Release/
+    └── RelWithDebInfo/
+```
+
+Defined in `/home/daytona/workspace/source/CMakeLists.txt:91-93`
+
+## Cross-Platform Build Script
+
+### Windows (PowerShell)
+
+```powershell
+# Configure
+cmake -B build -G "Visual Studio 17 2022" -T ClangCL `
+    -DCMAKE_BUILD_TYPE=Release `
+    -DREXGLUE_USE_D3D12=ON
+
+# Build
+cmake --build build --config Release -j
+
+# Run
+.\out\win-amd64\Release\my_recompiled_app.exe
+```
+
+### Linux (Bash)
+
+```bash
+# Configure
+cmake -B build -G Ninja \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_CXX_COMPILER=clang++ \
+    -DREXGLUE_USE_VULKAN=ON
+
+# Build
+cmake --build build -j$(nproc)
+
+# Run
+./out/linux-amd64/my_recompiled_app
+```
+
+## Common Platform-Specific Issues
+
+### Windows: Missing DLLs
+
+**Symptom**: Application fails to start with "VCRUNTIME140.dll not found"
+
+**Solution**: Install Visual C++ Redistributable or build with static linking:
+
+```bash
+cmake -B build -DCMAKE_MSVC_RUNTIME_LIBRARY="MultiThreaded"
+```
+
+### Linux: Missing Vulkan Drivers
+
+**Symptom**: "Failed to create Vulkan instance"
+
+**Solution**: Install Vulkan drivers:
+
+```bash
+# Ubuntu/Debian
+sudo apt install mesa-vulkan-drivers vulkan-tools
+
+# Arch Linux
+sudo pacman -S vulkan-icd-loader vulkan-tools
+
+# Verify
+vulkaninfo
+```
+
+### Linux: Large Code Model Linking Issues
+
+**Symptom**: Linker error "relocation truncated to fit"
+
+**Solution**: Already handled by `-mcmodel=large`. If it persists, reduce executable size by splitting functions.
+
+### Windows: Path Length Limits
+
+**Symptom**: Build fails with "path too long" errors
+
+**Solution**: Enable long paths in Windows:
+
+```powershell
+# Run as Administrator
+New-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem" `
+    -Name "LongPathsEnabled" -Value 1 -PropertyType DWORD -Force
+```
+
+## Platform Testing Strategy
+
+1. **Develop on primary platform** (Windows or Linux)
+2. **Test on both platforms** before release
+3. **Use CI/CD** to build and test both platforms automatically
+4. **Profile on target platform** (don't assume performance parity)
+5. **Test graphics backends separately** (D3D12 vs Vulkan)
+
+## CMake Configuration Summary
+
+```bash
+# Windows (D3D12)
+cmake -B build \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DREXGLUE_USE_D3D12=ON \
+    -DREXGLUE_USE_VULKAN=OFF
+
+# Linux (Vulkan)
+cmake -B build \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_CXX_COMPILER=clang++ \
+    -DREXGLUE_USE_VULKAN=ON
+
+# Cross-platform (Vulkan on both)
+cmake -B build \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DREXGLUE_USE_D3D12=OFF \
+    -DREXGLUE_USE_VULKAN=ON
+```
+
+## Related Topics
+
+- [Optimization](/advanced/optimization) - Platform-specific optimization flags
+- [Debugging](/advanced/debugging) - Platform-specific debugging tools
+- [Exception Handlers](/advanced/exception-handlers) - SEH vs signal handlers

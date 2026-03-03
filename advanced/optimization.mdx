@@ -1,0 +1,390 @@
+---
+title: Optimization and Performance
+description: Optimize recompiled code for maximum performance
+---
+
+## Overview
+
+ReXGlue provides multiple optimization levels and code generation options to tune performance of recompiled Xbox 360 executables. This guide covers compiler optimization flags, code generation options, and performance tuning strategies.
+
+## Compiler Optimization Levels
+
+### Build Type Optimization
+
+ReXGlue uses Clang's optimization levels via CMake build types:
+
+| Build Type | Optimization | Debug Info | Use Case |
+|------------|--------------|------------|----------|
+| `Debug` | `-O0` | Full (`-g`) | Development, debugging |
+| `Release` | `-O3` | None | Production, maximum performance |
+| `RelWithDebInfo` | `-O2` | Full (`-g`) | Profiling, performance debugging |
+| `MinSizeRel` | `-Os` | None | Size-constrained deployments |
+
+Defined in `/home/daytona/workspace/source/CMakeLists.txt:72-75`
+
+### Setting Build Type
+
+```bash
+# Maximum performance (recommended for production)
+cmake -B build -DCMAKE_BUILD_TYPE=Release
+
+# Development with debugging
+cmake -B build -DCMAKE_BUILD_TYPE=Debug
+
+# Performance profiling
+cmake -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo
+```
+
+### Clang Compiler Requirement
+
+ReXGlue **requires Clang 18+** for optimal code generation:
+
+```bash
+# Verify Clang version
+clang++ --version  # Must be >= 18.0
+
+# Set Clang as compiler
+cmake -B build -DCMAKE_CXX_COMPILER=clang++
+```
+
+Enforced in `/home/daytona/workspace/source/CMakeLists.txt:40-46`
+
+## Code Generation Options
+
+### RecompilerConfig Optimization Flags
+
+Configure code generation in your TOML config or programmatically:
+
+```cpp
+#include <rex/codegen/config.h>
+
+rex::codegen::RecompilerConfig config;
+
+// Register usage optimization
+config.nonArgumentRegistersAsLocalVariables = true;
+config.nonVolatileRegistersAsLocalVariables = true;
+config.crRegistersAsLocalVariables = true;
+config.reservedRegisterAsLocalVariable = true;
+
+// Control flow optimization
+config.skipLr = false;        // Keep link register tracking
+config.skipMsr = true;        // Skip rarely-used MSR register
+config.ctrAsLocalVariable = true;   // CTR as local variable
+config.xerAsLocalVariable = true;   // XER as local variable
+
+// Exception handling
+config.generateExceptionHandlers = false;  // Disable for max performance
+```
+
+Defined in `/home/daytona/workspace/source/include/rex/codegen/config.h:82-91`
+
+### Register Allocation Strategies
+
+#### 1. Non-Argument Registers as Locals
+
+```cpp
+config.nonArgumentRegistersAsLocalVariables = true;
+```
+
+**Effect**: Treats non-argument PowerPC registers (r4-r31) as C++ local variables instead of context members, allowing better compiler optimization and register allocation.
+
+**Use when**: Function is self-contained and doesn't call out to other recompiled code frequently.
+
+#### 2. Non-Volatile Registers as Locals
+
+```cpp
+config.nonVolatileRegistersAsLocalVariables = true;
+```
+
+**Effect**: Treats callee-saved registers (r14-r31) as local variables.
+
+**Use when**: Function follows standard calling conventions and preserves non-volatile registers.
+
+#### 3. Condition Register Optimization
+
+```cpp
+config.crRegistersAsLocalVariables = true;
+```
+
+**Effect**: Stores CR0-CR7 fields as local booleans instead of bitfields in the context structure.
+
+**Use when**: Function has many condition register operations (common in branches).
+
+### Special Register Optimization
+
+#### Skip Link Register (LR)
+
+```cpp
+config.skipLr = true;
+```
+
+**Effect**: Omits link register tracking if the function doesn't use `blr` or save/restore LR.
+
+**Trade-off**: Saves overhead but breaks functions that return via LR.
+
+#### Skip Machine State Register (MSR)
+
+```cpp
+config.skipMsr = true;
+```
+
+**Effect**: Omits MSR tracking (rarely used in game code).
+
+**Recommended**: Enable for most game functions.
+
+#### CTR/XER as Local Variables
+
+```cpp
+config.ctrAsLocalVariable = true;
+config.xerAsLocalVariable = true;
+```
+
+**Effect**: Stores CTR (count register) and XER (fixed-point exception register) as local variables.
+
+**Use when**: Function heavily uses loops (CTR) or carry/overflow flags (XER).
+
+## Platform-Specific Optimizations
+
+### Linux: Large Code Model
+
+On Linux, ReXGlue uses the large code model for executables over 35MB:
+
+```cmake
+# Automatically applied on Linux
+add_compile_options(-mcmodel=large)
+```
+
+Defined in `/home/daytona/workspace/source/CMakeLists.txt:64`
+
+**Reason**: Supports very large recompiled executables that exceed the default code model's 2GB addressing limit.
+
+### Floating-Point Model
+
+ReXGlue uses strict floating-point semantics to match PowerPC behavior:
+
+```cmake
+add_compile_options(-ffp-model=strict)
+```
+
+Defined in `/home/daytona/workspace/source/CMakeLists.txt:71`
+
+**Trade-off**: Ensures correctness but disables aggressive FP optimizations like reassociation and fused multiply-add.
+
+### No Strict Aliasing
+
+```cmake
+add_compile_options(-fno-strict-aliasing)
+```
+
+Defined in `/home/daytona/workspace/source/CMakeLists.txt:70`
+
+**Reason**: Recompiled code frequently casts pointers (e.g., byte access to words), which violates C++ strict aliasing rules.
+
+## Performance Tuning
+
+### Analysis Thresholds
+
+Tune analysis heuristics for your binary:
+
+```cpp
+config.maxJumpExtension = 65536;          // Max bytes to extend function for jump tables
+config.dataRegionThreshold = 16;          // Consecutive invalid instructions = data
+config.largeFunctionThreshold = 1048576;  // 1MB warning threshold
+```
+
+Defined in `/home/daytona/workspace/source/include/rex/codegen/config.h:93-95`
+
+#### Max Jump Extension
+
+Controls how far the recompiler extends a function to include jump table targets:
+
+```cpp
+config.maxJumpExtension = 131072;  // 128KB - for functions with large switch tables
+```
+
+**Increase**: If you see warnings about jump targets outside function bounds.
+
+**Decrease**: If functions are incorrectly merged due to distant jumps.
+
+#### Data Region Threshold
+
+Number of consecutive invalid instructions before marking a region as data:
+
+```cpp
+config.dataRegionThreshold = 8;  // More aggressive data detection
+```
+
+**Lower values**: More aggressive data detection, may split functions.
+
+**Higher values**: More tolerant of invalid instructions in code.
+
+### Exception Handler Overhead
+
+Exception handlers add significant overhead:
+
+```cpp
+// Development: Enable for debugging
+config.generateExceptionHandlers = true;
+
+// Production: Disable for maximum performance
+config.generateExceptionHandlers = false;
+```
+
+**Overhead**: ~10-20% performance penalty from SEH prologues/epilogues.
+
+**Recommendation**: Enable only when debugging or if you need to catch runtime exceptions.
+
+## Link-Time Optimization (LTO)
+
+Enable LTO for whole-program optimization:
+
+```bash
+cmake -B build \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON
+```
+
+**Benefits**:
+- Cross-module inlining
+- Better dead code elimination
+- Optimized calling conventions
+
+**Trade-offs**:
+- Longer build times
+- Higher memory usage during linking
+
+## Profiling and Benchmarking
+
+### CPU Profiling
+
+#### Linux: perf
+
+```bash
+# Build with profiling info
+cmake -B build -DCMAKE_BUILD_TYPE=RelWithDebInfo
+cmake --build build
+
+# Profile execution
+perf record -g ./my_recompiled_app
+perf report
+```
+
+#### Windows: Visual Studio Profiler
+
+1. Build with `RelWithDebInfo`
+2. Open in Visual Studio
+3. Debug → Performance Profiler
+4. Select CPU Usage
+5. Start profiling
+
+### Hotspot Analysis
+
+Identify performance bottlenecks:
+
+```bash
+# Sample-based profiling (low overhead)
+perf record -F 99 -g ./my_app
+
+# Generate flamegraph
+git clone https://github.com/brendangregg/FlameGraph
+perf script | FlameGraph/stackcollapse-perf.pl | FlameGraph/flamegraph.pl > flame.svg
+```
+
+### Micro-Benchmarking
+
+Benchmark specific recompiled functions:
+
+```cpp
+#include <chrono>
+
+void BenchmarkFunction() {
+  auto start = std::chrono::high_resolution_clock::now();
+  
+  // Call recompiled function 1000 times
+  for (int i = 0; i < 1000; i++) {
+    sub_82100000(&ppc_ctx);
+  }
+  
+  auto end = std::chrono::high_resolution_clock::now();
+  auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
+  printf("Average: %lld μs\n", duration.count() / 1000);
+}
+```
+
+## Common Performance Issues
+
+### Issue: Slow Memory Access
+
+**Symptom**: Recompiled code is 5-10x slower than expected
+
+**Cause**: Every memory access goes through indirection
+
+**Solution**: Ensure guest memory is mapped at a fixed address (default: `0x100000000`)
+
+### Issue: Excessive Context Switching
+
+**Symptom**: High overhead in `PPCContext` loads/stores
+
+**Cause**: Registers stored in context instead of local variables
+
+**Solution**: Enable register-as-local optimizations:
+
+```cpp
+config.nonArgumentRegistersAsLocalVariables = true;
+config.crRegistersAsLocalVariables = true;
+```
+
+### Issue: Debug Assertions in Hot Paths
+
+**Symptom**: Debug build is 100x slower than Release
+
+**Cause**: `assert_*` macros execute expensive checks
+
+**Solution**: Use `RelWithDebInfo` for profiling, or disable specific assertions:
+
+```cpp
+#ifdef NDEBUG
+  #define HOT_PATH_ASSERT(x) ((void)0)
+#else
+  #define HOT_PATH_ASSERT(x) assert_true(x)
+#endif
+```
+
+### Issue: Large Function Compilation Time
+
+**Symptom**: Clang takes minutes to compile a single function
+
+**Cause**: Function is too large (>100KB) for effective optimization
+
+**Solution**: Split into chunks using the `parent` field:
+
+```toml
+[functions.0x82100000]
+name = "HugeFunction_Part1"
+size = 0x10000
+
+[functions.0x82110000]
+name = "HugeFunction_Part2"
+parent = 0x82100000  # Chunk of parent function
+size = 0x10000
+```
+
+## Optimization Checklist
+
+For maximum performance:
+
+- [ ] Use `Release` build type (`-O3`)
+- [ ] Enable Clang 18+ with LTO
+- [ ] Set `generateExceptionHandlers = false` in production
+- [ ] Enable register-as-local optimizations for hot functions
+- [ ] Set `skipMsr = true` for most functions
+- [ ] Use `-mcmodel=large` on Linux for large executables
+- [ ] Profile with `perf` or Visual Studio Profiler
+- [ ] Benchmark before and after optimizations
+- [ ] Consider splitting functions >1MB into chunks
+
+## Related Topics
+
+- [Debugging](/advanced/debugging) - Debug builds and sanitizers
+- [Platform Support](/advanced/platform-support) - Platform-specific optimizations
+- [Exception Handlers](/advanced/exception-handlers) - Performance impact of SEH

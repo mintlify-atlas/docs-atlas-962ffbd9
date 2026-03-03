@@ -1,0 +1,413 @@
+---
+title: Installation
+description: Install the ReXGlue SDK and set up your development environment
+---
+
+# Installation
+
+This guide walks through installing the ReXGlue SDK and configuring your development environment for static recompilation of Xbox 360 executables.
+
+## System Requirements
+
+<Tabs>
+  <Tab title="Windows">
+    **Minimum Requirements:**
+
+    - Windows 10/11 (x64)
+    - Clang 18 or newer
+    - CMake 3.25+
+    - Ninja build system
+    - Visual Studio 2022 (for Windows SDK)
+
+    **Graphics:**
+    - DirectX 12 capable GPU
+    - Latest graphics drivers
+  </Tab>
+  <Tab title="Linux">
+    **Minimum Requirements:**
+
+    - Linux (x64) - Ubuntu 22.04+ or equivalent
+    - Clang 18 or newer (Clang 20 recommended)
+    - CMake 3.25+
+    - Ninja build system
+    - GTK 3 development libraries
+
+    **Graphics:**
+    - Vulkan 1.2+ capable GPU
+    - Latest Mesa drivers or proprietary GPU drivers
+  </Tab>
+</Tabs>
+
+<Warning>
+  **Architecture Requirement**: ReXGlue requires x64 architecture. 32-bit systems and ARM are not supported.
+</Warning>
+
+<Warning>
+  **Compiler Requirement**: ReXGlue requires Clang 18+ and will not compile with GCC or MSVC. The build system enforces this requirement.
+</Warning>
+
+## Step 1: Install Prerequisites
+
+<Tabs>
+  <Tab title="Windows">
+    ### Install Clang and Build Tools
+
+    1. **Install LLVM/Clang 18+**:
+       - Download from [LLVM releases](https://github.com/llvm/llvm-project/releases)
+       - Add to PATH: `C:\Program Files\LLVM\bin`
+
+    2. **Install CMake**:
+       - Download from [cmake.org](https://cmake.org/download/)
+       - Or via chocolatey: `choco install cmake`
+
+    3. **Install Ninja**:
+       ```bash
+       choco install ninja
+       ```
+
+    4. **Install Visual Studio 2022**:
+       - Required for Windows SDK headers
+       - Select "Desktop development with C++" workload
+
+    ### Verify Installation
+
+    ```bash
+    clang --version   # Should show 18.0.0 or newer
+    cmake --version   # Should show 3.25 or newer
+    ninja --version
+    ```
+  </Tab>
+  <Tab title="Linux">
+    ### Install Clang and Build Tools
+
+    **Ubuntu/Debian:**
+
+    ```bash
+    # Add LLVM repository for Clang 20
+    wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc
+    sudo add-apt-repository "deb http://apt.llvm.org/$(lsb_release -sc)/ llvm-toolchain-$(lsb_release -sc)-20 main"
+    
+    # Install build tools
+    sudo apt update
+    sudo apt install -y clang-20 clang++-20 cmake ninja-build
+    
+    # Install GTK and Vulkan development libraries
+    sudo apt install -y libgtk-3-dev libvulkan-dev vulkan-validationlayers-dev
+    
+    # Set Clang as default
+    sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-20 100
+    sudo update-alternatives --install /usr/bin/clang++ clang++ /usr/bin/clang++-20 100
+    ```
+
+    **Arch Linux:**
+
+    ```bash
+    sudo pacman -S clang cmake ninja gtk3 vulkan-devel
+    ```
+
+    ### Verify Installation
+
+    ```bash
+    clang-20 --version  # Should show 20.0.0 or newer
+    cmake --version     # Should show 3.25 or newer
+    ninja --version
+    vulkaninfo | head   # Verify Vulkan is available
+    ```
+  </Tab>
+</Tabs>
+
+## Step 2: Download ReXGlue SDK
+
+You can either download a pre-built release or build from source.
+
+<Tabs>
+  <Tab title="Pre-built Release">
+    ### Download from GitHub Releases
+
+    1. Visit [ReXGlue SDK Releases](https://github.com/rexglue/rexglue-sdk/releases)
+    2. Download the latest release for your platform:
+       - `rexglue-sdk-win-amd64-vX.X.X.zip` (Windows)
+       - `rexglue-sdk-linux-amd64-vX.X.X.tar.gz` (Linux)
+
+    3. Extract to your preferred location:
+
+    ```bash
+    # Windows (PowerShell)
+    Expand-Archive rexglue-sdk-win-amd64-v0.2.2.zip -DestinationPath C:\rexglue-sdk
+
+    # Linux
+    tar -xzf rexglue-sdk-linux-amd64-v0.2.2.tar.gz -C ~/rexglue-sdk
+    ```
+
+    4. Add the SDK binaries to your PATH:
+
+    ```bash
+    # Windows (add to environment variables)
+    setx PATH "%PATH%;C:\rexglue-sdk\bin"
+
+    # Linux (add to ~/.bashrc or ~/.zshrc)
+    export PATH="$HOME/rexglue-sdk/bin:$PATH"
+    ```
+
+    <Note>
+      Pre-built releases include the `rexglue` CLI tool and runtime libraries ready to use.
+    </Note>
+  </Tab>
+  <Tab title="Build from Source">
+    ### Clone and Build SDK
+
+    1. **Clone the repository**:
+
+    ```bash
+    git clone https://github.com/rexglue/rexglue-sdk.git
+    cd rexglue-sdk
+    ```
+
+    2. **Configure build** (choose your platform preset):
+
+    <CodeGroup>
+    ```bash Windows Debug
+    cmake --preset win-amd64-debug
+    ```
+
+    ```bash Windows Release
+    cmake --preset win-amd64-release
+    ```
+
+    ```bash Linux Debug
+    cmake --preset linux-amd64-debug
+    ```
+
+    ```bash Linux Release
+    cmake --preset linux-amd64-release
+    ```
+    </CodeGroup>
+
+    3. **Build the SDK**:
+
+    ```bash
+    # Build all targets
+    cmake --build out/build/<preset-name>
+
+    # Or build specific targets
+    cmake --build out/build/<preset-name> --target rexglue
+    ```
+
+    4. **Verify build output**:
+
+    ```bash
+    # Binary output location
+    ls out/win-amd64/      # Windows
+    ls out/linux-amd64/    # Linux
+    ```
+
+    <Note>
+      Building from source gives you the latest development version and allows you to customize build options.
+    </Note>
+  </Tab>
+</Tabs>
+
+## Step 3: Verify Installation
+
+Test that the ReXGlue CLI tool is working:
+
+```bash
+rexglue --help
+```
+
+You should see output similar to:
+
+```
+ReXGlue - Xbox 360 Recompilation Toolkit
+
+Usage: rexglue <command> [flags] [args]
+
+Commands:
+  codegen <config.toml>   Analyze XEX and generate C++ code
+  init                    Initialize a new project
+  migrate                 Migrate project to current SDK version
+  recompile-tests         Generate Catch2 tests from PPC assembly
+
+Run 'rexglue --help' for flag details.
+```
+
+Location: `src/rexglue/main.cpp:44-53`
+
+## Step 4: Configure Graphics Backend
+
+The SDK supports multiple graphics backends depending on your platform.
+
+<Tabs>
+  <Tab title="Windows (D3D12)">
+    **Direct3D 12** is the default backend on Windows.
+
+    Enabled automatically via CMake option: `REXGLUE_USE_D3D12=ON`
+
+    **Requirements:**
+    - Windows 10/11 with DirectX 12
+    - D3D12-capable GPU (most GPUs from 2015+)
+
+    No additional configuration needed.
+  </Tab>
+  <Tab title="Linux (Vulkan)">
+    **Vulkan** is the default backend on Linux.
+
+    Enabled automatically via CMake option: `REXGLUE_USE_VULKAN=ON`
+
+    **Verify Vulkan installation:**
+
+    ```bash
+    vulkaninfo | grep "Vulkan Instance Version"
+    ```
+
+    Should show version 1.2.0 or newer.
+
+    **Optional: Enable validation layers for debugging**
+
+    ```bash
+    export VK_LAYER_PATH=/usr/share/vulkan/explicit_layer.d
+    export VK_INSTANCE_LAYERS=VK_LAYER_KHRONOS_validation
+    ```
+  </Tab>
+  <Tab title="Dual Backend">
+    You can enable both backends on Windows for testing:
+
+    ```bash
+    cmake -DREXGLUE_USE_D3D12=ON -DREXGLUE_USE_VULKAN=ON --preset win-amd64-release
+    ```
+
+    <Note>
+      At least one graphics backend must be enabled. The build will fail if both are disabled.
+    </Note>
+
+    Location: `CMakeLists.txt:18-30`
+  </Tab>
+</Tabs>
+
+## Optional: Enable Build Features
+
+### Build with Tests
+
+Enable unit tests and PPC instruction tests:
+
+```bash
+cmake -DREXGLUE_BUILD_TESTS=ON --preset <your-preset>
+cmake --build out/build/<preset-name>
+
+# Run tests
+ctest --test-dir out/build/<preset-name>
+```
+
+### Enable Sanitizers (Debug)
+
+Enable undefined behavior sanitizer for debugging:
+
+```bash
+cmake -DREXGLUE_ENABLE_SANITIZERS=ON --preset <debug-preset>
+```
+
+<Warning>
+  Address Sanitizer (ASan) is **not compatible** with ReXGlue's memory mapping at `0x100000000`. Only UndefinedBehaviorSanitizer (UBSan) is supported.
+</Warning>
+
+Location: `CMakeLists.txt:96-101`
+
+## Project Integration Methods
+
+Once installed, you can use the SDK in your projects in two ways:
+
+### Method 1: Add as Subdirectory (Recommended)
+
+Include the SDK source tree in your project:
+
+```cmake
+# In your CMakeLists.txt
+set(REXSDK_DIR "${CMAKE_SOURCE_DIR}/thirdparty/rexglue-sdk" CACHE PATH "")
+add_subdirectory("${REXSDK_DIR}" rexglue-sdk)
+
+target_link_libraries(my_game PRIVATE rex::core rex::system)
+```
+
+### Method 2: Use Installed Package
+
+If you installed the SDK to a system location:
+
+```cmake
+find_package(rexglue REQUIRED CONFIG)
+target_link_libraries(my_game PRIVATE rex::core rex::system)
+```
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="CMake can't find Clang 18">
+    Explicitly set the compiler:
+
+    ```bash
+    cmake -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ --preset <preset>
+    ```
+
+    On Linux with specific version:
+
+    ```bash
+    cmake -DCMAKE_C_COMPILER=clang-20 -DCMAKE_CXX_COMPILER=clang++-20 --preset <preset>
+    ```
+  </Accordion>
+
+  <Accordion title="Build fails with 'Clang required' error">
+    The SDK enforces Clang compiler. Verify:
+
+    ```bash
+    clang --version
+    ```
+
+    Ensure it shows Clang 18.0.0 or newer. Set compiler explicitly in CMake.
+
+    Location: `CMakeLists.txt:39-46`
+  </Accordion>
+
+  <Accordion title="Graphics backend error 'at least one backend must be enabled'">
+    Check that you haven't disabled both graphics backends:
+
+    ```bash
+    # On Windows, enable D3D12 (default)
+    cmake -DREXGLUE_USE_D3D12=ON --preset win-amd64-release
+
+    # On Linux, enable Vulkan (default)
+    cmake -DREXGLUE_USE_VULKAN=ON --preset linux-amd64-release
+    ```
+
+    Location: `CMakeLists.txt:28-30`
+  </Accordion>
+
+  <Accordion title="Vulkan validation layers not found (Linux)">
+    Install validation layers:
+
+    ```bash
+    # Ubuntu/Debian
+    sudo apt install vulkan-validationlayers-dev
+
+    # Arch
+    sudo pacman -S vulkan-validation-layers
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card
+    title="Quick Start Guide"
+    icon="rocket"
+    href="/quickstart"
+  >
+    Create your first recompiled project with `rexglue init`
+  </Card>
+  <Card
+    title="Architecture Overview"
+    icon="diagram-project"
+    href="/architecture"
+  >
+    Learn about the recompilation system architecture
+  </Card>
+</CardGroup>

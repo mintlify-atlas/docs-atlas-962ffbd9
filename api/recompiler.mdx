@@ -1,0 +1,278 @@
+---
+title: 'Recompiler'
+description: 'PPC to C++ recompiler interface'
+---
+
+## Overview
+
+The `rex::codegen::Recompiler` class is the main interface for converting PowerPC binary code to C++ source code. It manages the recompilation process, output buffering, and file generation.
+
+## Class Definition
+
+```cpp
+namespace rex::codegen {
+  struct Recompiler {
+    std::unique_ptr<rex::Runtime> runtime;
+    CodegenContext* ctx_;
+    std::string out;
+    size_t cppFileIndex;
+    std::vector<std::pair<std::string, std::string>> pendingWrites;
+    bool validationFailed_;
+
+    Recompiler();
+    ~Recompiler();
+
+    // Output methods
+    template <class... Args>
+    void print(fmt::format_string<Args...> fmt, Args&&... args);
+
+    template <class... Args>
+    void println(fmt::format_string<Args...> fmt, Args&&... args);
+
+    // Recompilation methods
+    bool recompile(const FunctionNode& fn, uint32_t base, const ppc_insn& insn,
+                   const uint32_t* data,
+                   std::unordered_map<uint32_t, JumpTable>::iterator& switchTable,
+                   RecompilerLocalVariables& localVariables, CSRState& csrState);
+
+    bool recompile(const FunctionNode& fn);
+    bool recompile(bool force);
+
+    // File management
+    void SaveCurrentOutData(const std::string_view& name = std::string_view());
+    void FlushPendingWrites();
+  };
+}
+```
+
+## Public Members
+
+<ParamField path="runtime" type="std::unique_ptr<rex::Runtime>">
+  Runtime environment for executing recompiled code
+</ParamField>
+
+<ParamField path="ctx_" type="CodegenContext*">
+  Non-owning pointer to the code generation context
+</ParamField>
+
+<ParamField path="out" type="std::string">
+  Output buffer accumulating generated C++ code
+</ParamField>
+
+<ParamField path="cppFileIndex" type="size_t">
+  Counter for generating unique C++ file names
+</ParamField>
+
+<ParamField path="pendingWrites" type="std::vector<std::pair<std::string, std::string>>">
+  Deferred file writes buffered until validation passes. Each pair contains (filename, content).
+</ParamField>
+
+<ParamField path="validationFailed_" type="bool">
+  Tracks if validation failed during analysis
+</ParamField>
+
+## Methods
+
+### print()
+
+Append formatted text to the output buffer.
+
+```cpp
+template <class... Args>
+void print(fmt::format_string<Args...> fmt, Args&&... args)
+```
+
+<ParamField path="fmt" type="fmt::format_string<Args...>">
+  Format string using {fmt} syntax
+</ParamField>
+
+<ParamField path="args" type="Args&&...">
+  Variadic arguments to format
+</ParamField>
+
+**Example:**
+```cpp
+recompiler.print("uint32_t r{} = ", regNum);
+```
+
+### println()
+
+Append formatted text with a newline to the output buffer.
+
+```cpp
+template <class... Args>
+void println(fmt::format_string<Args...> fmt, Args&&... args)
+```
+
+<ParamField path="fmt" type="fmt::format_string<Args...>">
+  Format string using {fmt} syntax
+</ParamField>
+
+<ParamField path="args" type="Args&&...">
+  Variadic arguments to format
+</ParamField>
+
+**Example:**
+```cpp
+recompiler.println("  ctx.r[{}] = 0x{:08X};", reg, value);
+```
+
+### recompile() - Single Instruction
+
+Recompile a single PowerPC instruction (internal use).
+
+```cpp
+bool recompile(const FunctionNode& fn, uint32_t base, const ppc_insn& insn,
+               const uint32_t* data,
+               std::unordered_map<uint32_t, JumpTable>::iterator& switchTable,
+               RecompilerLocalVariables& localVariables, CSRState& csrState)
+```
+
+<ParamField path="fn" type="const FunctionNode&">
+  Function node containing the instruction
+</ParamField>
+
+<ParamField path="base" type="uint32_t">
+  Base address for the instruction
+</ParamField>
+
+<ParamField path="insn" type="const ppc_insn&">
+  PowerPC instruction to recompile
+</ParamField>
+
+<ParamField path="data" type="const uint32_t*">
+  Pointer to instruction data
+</ParamField>
+
+<ParamField path="switchTable" type="std::unordered_map<uint32_t, JumpTable>::iterator&">
+  Iterator to current jump table (if any)
+</ParamField>
+
+<ParamField path="localVariables" type="RecompilerLocalVariables&">
+  Tracks which registers are used as local variables
+</ParamField>
+
+<ParamField path="csrState" type="CSRState&">
+  Current control/status register state (FPU or VMX)
+</ParamField>
+
+**Returns:** `true` on success, `false` on error
+
+### recompile() - Single Function
+
+Recompile an entire function (internal use).
+
+```cpp
+bool recompile(const FunctionNode& fn)
+```
+
+<ParamField path="fn" type="const FunctionNode&">
+  Function node to recompile
+</ParamField>
+
+**Returns:** `true` on success, `false` on error
+
+### recompile() - All Functions
+
+Recompile all functions and write output files.
+
+```cpp
+bool recompile(bool force)
+```
+
+<ParamField path="force" type="bool">
+  If `true`, generate output even if validation errors occur. If `false`, validation errors block code generation.
+</ParamField>
+
+**Returns:** `true` if output was generated, `false` if blocked due to errors
+
+<Note>
+Generated code includes SDK headers (`rexglue/runtime/ppc_context.h`) and follows the configured code generation options from `RecompilerConfig`.
+</Note>
+
+### SaveCurrentOutData()
+
+Save the current output buffer to pending writes.
+
+```cpp
+void SaveCurrentOutData(const std::string_view& name = std::string_view())
+```
+
+<ParamField path="name" type="const std::string_view&" default="std::string_view()">
+  Optional custom filename. If empty, uses auto-generated name based on `cppFileIndex`.
+</ParamField>
+
+### FlushPendingWrites()
+
+Write all pending files to disk. Called after validation passes.
+
+```cpp
+void FlushPendingWrites()
+```
+
+<Warning>
+This method writes all buffered files to the output directory specified in the configuration. Ensure validation has passed before calling.
+</Warning>
+
+## Related Types
+
+### RecompilerLocalVariables
+
+Tracks which PowerPC registers are allocated as C++ local variables during recompilation.
+
+```cpp
+struct RecompilerLocalVariables {
+  bool ctr;        // Count register
+  bool xer;        // Fixed-point exception register
+  bool reserved;   // Reserved register (r13)
+  bool cr[8];      // Condition register fields
+  bool r[32];      // General-purpose registers
+  bool f[32];      // Floating-point registers
+  bool v[128];     // Vector registers
+  bool env;        // Environment pointer
+  bool temp;       // Temporary variable
+  bool v_temp;     // Vector temporary
+  bool ea;         // Effective address
+
+  uint32_t mmio_base_regs;  // Bit mask tracking MMIO base addresses
+
+  void set_mmio_base(size_t reg);
+  void clear_mmio_base(size_t reg);
+  bool is_mmio_base(size_t reg) const;
+};
+```
+
+<ParamField path="mmio_base_regs" type="uint32_t">
+  Bit mask where bit N indicates rN contains an MMIO base address. Set when `lis` loads a value with upper 16 bits >= 0x7F00 (address >= 0x7F000000) or when `oris` sets upper bits >= 0xC800 (address >= 0xC8000000).
+</ParamField>
+
+### CSRState
+
+Tracks the current control/status register mode.
+
+```cpp
+enum class CSRState { Unknown, FPU, VMX };
+```
+
+<ParamField path="Unknown" type="enum value">
+  Status register mode is unknown
+</ParamField>
+
+<ParamField path="FPU" type="enum value">
+  Floating-point unit mode
+</ParamField>
+
+<ParamField path="VMX" type="enum value">
+  Vector/SIMD (AltiVec) mode
+</ParamField>
+
+## Constants
+
+<ParamField path="c_eieio" type="static constexpr uint32_t" default="0xAC06007C">
+  Encoded instruction value for PowerPC EIEIO (Enforce In-order Execution of I/O) instruction.
+</ParamField>
+
+## See Also
+
+- [RecompilerConfig](/api/recompiler-config) - Configuration structure
+- [FunctionConfig](/api/function-config) - Per-function configuration

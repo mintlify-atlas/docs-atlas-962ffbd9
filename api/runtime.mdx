@@ -1,0 +1,315 @@
+---
+title: "rex::Runtime"
+description: "Main entry point for ReXGlue runtime subsystem"
+---
+
+# Runtime
+
+The `rex::Runtime` class is the main entry point for recompiled applications. It owns and manages all runtime subsystems including memory, virtual file system, kernel state, and backend systems (graphics, audio, input).
+
+## Constructor
+
+```cpp
+explicit Runtime(const std::filesystem::path& game_data_root,
+                 const std::filesystem::path& user_data_root = {},
+                 const std::filesystem::path& update_data_root = {})
+```
+
+Creates a new Runtime instance with the specified data paths.
+
+<ParamField path="game_data_root" type="const std::filesystem::path&" required>
+  Path to game data directory. Mounted as `game:` and `d:` in the virtual file system.
+</ParamField>
+
+<ParamField path="user_data_root" type="const std::filesystem::path&" default="{}">
+  Path to user data directory for save files and settings. Defaults to `game_data_root` if empty.
+</ParamField>
+
+<ParamField path="update_data_root" type="const std::filesystem::path&" default="{}">
+  Path to update/DLC data directory. Mounted as `update:` if provided and exists.
+</ParamField>
+
+## Setup Methods
+
+### Basic Setup
+
+```cpp
+X_STATUS Setup(RuntimeConfig config = {})
+```
+
+Initializes the runtime environment with the provided configuration. This method:
+- Initializes SEH exception support
+- Sets up the guest clock (50MHz tick frequency)
+- Creates memory system
+- Initializes processor and export resolver
+- Sets up virtual file system
+- Initializes backend systems (graphics, audio, input) from config
+- Loads HLE kernel modules (xboxkrnl, xam)
+
+<ParamField path="config" type="RuntimeConfig" default="{}">
+  Runtime configuration with backend system factories. See [RuntimeConfig](/api/runtime-config).
+</ParamField>
+
+<ResponseField name="X_STATUS" type="uint32_t">
+  Returns `X_STATUS_SUCCESS` on success, or an error code:
+  - `X_STATUS_UNSUCCESSFUL` - Already initialized or initialization failed
+  - GPU setup errors if graphics backend fails and not in tool mode
+</ResponseField>
+
+### ReXGlue Setup (Recompiled Code)
+
+```cpp
+X_STATUS Setup(uint32_t code_base, uint32_t code_size, uint32_t image_base, 
+               uint32_t image_size, const PPCFuncMapping* func_mappings, 
+               RuntimeConfig config = {})
+```
+
+Initializes runtime for recompiled code execution. Calls basic `Setup()` first, then registers the function dispatch table for recompiled code.
+
+<ParamField path="code_base" type="uint32_t" required>
+  Guest virtual address where recompiled code begins.
+</ParamField>
+
+<ParamField path="code_size" type="uint32_t" required>
+  Size of the recompiled code region in bytes.
+</ParamField>
+
+<ParamField path="image_base" type="uint32_t" required>
+  Guest virtual address of the loaded XEX image.
+</ParamField>
+
+<ParamField path="image_size" type="uint32_t" required>
+  Size of the loaded XEX image in bytes.
+</ParamField>
+
+<ParamField path="func_mappings" type="const PPCFuncMapping*" required>
+  Null-terminated array of `{guest_addr, host_func}` pairs mapping guest addresses to recompiled host functions.
+</ParamField>
+
+<ParamField path="config" type="RuntimeConfig" default="{}">
+  Runtime configuration with backend system factories. See [RuntimeConfig](/api/runtime-config).
+</ParamField>
+
+<ResponseField name="X_STATUS" type="uint32_t">
+  Returns `X_STATUS_SUCCESS` on success, or error codes from basic `Setup()` or function table initialization.
+</ResponseField>
+
+<Warning>
+  This method sets the global `Runtime::instance()` singleton. Only call once per process.
+</Warning>
+
+## Module Loading
+
+### LoadXexImage
+
+```cpp
+X_STATUS LoadXexImage(const std::string_view module_path)
+```
+
+Loads an XEX module into guest memory from the virtual file system.
+
+<ParamField path="module_path" type="std::string_view" required>
+  Path to XEX file in VFS, typically `"game:\\default.xex"`.
+</ParamField>
+
+<ResponseField name="X_STATUS" type="uint32_t">
+  Returns `X_STATUS_SUCCESS` on success, or XEX loading error codes.
+</ResponseField>
+
+### LaunchModule
+
+```cpp
+system::object_ref<system::XThread> LaunchModule()
+```
+
+Launches the previously loaded executable module and returns the main thread.
+
+<ResponseField name="system::object_ref<system::XThread>" type="object_ref">
+  Returns the main thread object, or `nullptr` if launch failed.
+</ResponseField>
+
+<Note>
+  Call this after `LoadXexImage()` to begin execution. The returned thread can be waited on to detect program completion.
+</Note>
+
+## Shutdown
+
+```cpp
+void Shutdown()
+```
+
+Shuts down all subsystems in reverse initialization order. Automatically called by destructor.
+
+## Accessors
+
+### Subsystem Accessors
+
+```cpp
+memory::Memory* memory() const
+rex::filesystem::VirtualFileSystem* file_system() const
+system::KernelState* kernel_state() const
+system::IGraphicsSystem* graphics_system() const
+system::IAudioSystem* audio_system() const
+system::IInputSystem* input_system() const
+runtime::Processor* processor() const
+runtime::ExportResolver* export_resolver() const
+```
+
+Access runtime subsystems. Returns `nullptr` if the subsystem is not initialized.
+
+### Path Accessors
+
+```cpp
+const std::filesystem::path& game_data_root() const
+const std::filesystem::path& user_data_root() const
+const std::filesystem::path& update_data_root() const
+```
+
+Returns the configured data paths.
+
+### UI Context Accessors
+
+```cpp
+void set_app_context(ui::WindowedAppContext* context)
+ui::WindowedAppContext* app_context() const
+
+void set_display_window(ui::Window* window)
+ui::Window* display_window() const
+
+void set_imgui_drawer(ui::ImGuiDrawer* drawer)
+ui::ImGuiDrawer* imgui_drawer() const
+```
+
+Set and get UI components for presentation and dialog systems. Call setters before `Setup()`.
+
+### Global Instance
+
+```cpp
+static Runtime* instance()
+```
+
+Returns the global runtime instance, set after calling the ReXGlue `Setup()` overload.
+
+<ResponseField name="Runtime*" type="Runtime*">
+  Global runtime instance, or `nullptr` if not initialized.
+</ResponseField>
+
+### Tool Mode
+
+```cpp
+bool is_tool_mode() const
+```
+
+Checks if running in tool mode (GPU initialization skipped).
+
+### Memory Base
+
+```cpp
+uint8_t* virtual_membase() const
+```
+
+Returns the base pointer to guest virtual memory for recompiled code access.
+
+<ResponseField name="uint8_t*" type="uint8_t*">
+  Virtual memory base pointer, or `nullptr` if memory not initialized.
+</ResponseField>
+
+## Usage Example
+
+```cpp
+#include <rex/runtime.h>
+#include <rex/graphics/vulkan/graphics_system.h>
+#include <rex/audio/sdl/sdl_audio_system.h>
+#include <rex/input/input_system.h>
+
+// Typical ReXGlue application setup
+int main() {
+  // Create runtime with game assets path
+  auto runtime = std::make_unique<rex::Runtime>(
+    "path/to/game/assets",
+    "path/to/user/data"
+  );
+  
+  // Configure backends
+  rex::RuntimeConfig config;
+  config.graphics = REX_GRAPHICS_BACKEND(rex::graphics::vulkan::VulkanGraphicsSystem);
+  config.audio_factory = REX_AUDIO_BACKEND(rex::audio::sdl::SDLAudioSystem);
+  config.input_factory = REX_INPUT_BACKEND(rex::input::CreateDefaultInputSystem);
+  
+  // Setup for recompiled code
+  auto status = runtime->Setup(
+    ppc_info.code_base,
+    ppc_info.code_size,
+    ppc_info.image_base,
+    ppc_info.image_size,
+    ppc_info.func_mappings,
+    std::move(config)
+  );
+  
+  if (XFAILED(status)) {
+    REXLOG_ERROR("Runtime setup failed: {:08X}", status);
+    return 1;
+  }
+  
+  // Load and launch XEX
+  status = runtime->LoadXexImage("game:\\default.xex");
+  if (XFAILED(status)) {
+    REXLOG_ERROR("Failed to load XEX: {:08X}", status);
+    return 1;
+  }
+  
+  auto main_thread = runtime->LaunchModule();
+  if (!main_thread) {
+    REXLOG_ERROR("Failed to launch module");
+    return 1;
+  }
+  
+  // Wait for completion
+  main_thread->Wait(0, 0, 0, nullptr);
+  
+  return 0;
+}
+```
+
+## Real-World Example
+
+From `src/ui/rex_app.cpp:118-148`:
+
+```cpp
+// Create runtime
+runtime_ = std::make_unique<rex::Runtime>(game_data_root_, user_data_root_, update_data_root_);
+runtime_->set_app_context(&app_context());
+
+// Build runtime config with default platform backends
+rex::RuntimeConfig config;
+#if REX_HAS_D3D12
+config.graphics = REX_GRAPHICS_BACKEND(rex::graphics::d3d12::D3D12GraphicsSystem);
+#elif REX_HAS_VULKAN
+config.graphics = REX_GRAPHICS_BACKEND(rex::graphics::vulkan::VulkanGraphicsSystem);
+#endif
+config.audio_factory = REX_AUDIO_BACKEND(rex::audio::sdl::SDLAudioSystem);
+config.input_factory = REX_INPUT_BACKEND(rex::input::CreateDefaultInputSystem);
+
+// Allow subclass to customize config
+OnPreSetup(config);
+
+auto status = runtime_->Setup(ppc_info_.code_base, ppc_info_.code_size, ppc_info_.image_base,
+                              ppc_info_.image_size, ppc_info_.func_mappings, std::move(config));
+if (XFAILED(status)) {
+  REXLOG_ERROR("Runtime setup failed: {:08X}", status);
+  return false;
+}
+
+// Load XEX image
+status = runtime_->LoadXexImage("game:\\default.xex");
+if (XFAILED(status)) {
+  REXLOG_ERROR("Failed to load XEX: {:08X}", status);
+  return false;
+}
+```
+
+## See Also
+
+- [RuntimeConfig](/api/runtime-config) - Configuration structure and backend factories
+- Memory System - Guest virtual memory management
+- KernelState - Xbox 360 kernel emulation

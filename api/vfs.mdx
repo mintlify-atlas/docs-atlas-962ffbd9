@@ -1,0 +1,282 @@
+---
+title: VirtualFileSystem
+description: Virtual file system for path-based device mounting and symbolic link resolution
+---
+
+The `VirtualFileSystem` class provides a unified interface for mounting devices and resolving paths in the ReXGlue runtime. It abstracts Xbox 360 file system paths like `game:/` and `d:/` to host operating system directories.
+
+## Class Definition
+
+```cpp
+namespace rex::filesystem {
+  class VirtualFileSystem;
+}
+```
+
+**Header:** `<rex/filesystem/vfs.h>`
+
+## Overview
+
+VirtualFileSystem manages device registration and path resolution for the runtime. It supports:
+
+- **Device mounting** - Register filesystem devices at specific mount points
+- **Symbolic links** - Map Xbox 360 paths (e.g., `game:/`, `d:/`) to device paths
+- **Path resolution** - Resolve virtual paths to filesystem entries
+- **File operations** - Open, create, and delete files through mounted devices
+
+## Constructor & Destructor
+
+### VirtualFileSystem()
+
+```cpp
+VirtualFileSystem();
+```
+
+Constructs a new virtual file system instance.
+
+---
+
+### ~VirtualFileSystem()
+
+```cpp
+~VirtualFileSystem();
+```
+
+Destructs the VFS and releases all registered devices.
+
+## Device Management
+
+### RegisterDevice
+
+```cpp
+bool RegisterDevice(std::unique_ptr<Device> device);
+```
+
+Registers a filesystem device at its configured mount point.
+
+**Parameters:**
+- `device` - Unique pointer to the device to register (ownership transferred)
+
+**Returns:** `true` if registration succeeded, `false` otherwise.
+
+**Example:**
+```cpp
+auto device = std::make_unique<HostPathDevice>(
+  "\\Device\\Harddisk0\\Partition1",
+  "/path/to/game/files",
+  true  // read_only
+);
+if (vfs->RegisterDevice(std::move(device))) {
+  // Device registered successfully
+}
+```
+
+---
+
+### UnregisterDevice
+
+```cpp
+bool UnregisterDevice(const std::string_view path);
+```
+
+Unregisters a previously registered device.
+
+**Parameters:**
+- `path` - Mount path of the device to unregister
+
+**Returns:** `true` if unregistration succeeded, `false` if device not found.
+
+## Symbolic Link Management
+
+### RegisterSymbolicLink
+
+```cpp
+bool RegisterSymbolicLink(const std::string_view path,
+                          const std::string_view target);
+```
+
+Registers a symbolic link that redirects one path to another.
+
+**Parameters:**
+- `path` - Virtual path (e.g., `"game:"`, `"d:"`)
+- `target` - Target device path (e.g., `"\\Device\\Harddisk0\\Partition1"`)
+
+**Returns:** `true` if registration succeeded, `false` otherwise.
+
+**Example:**
+```cpp
+// Map game: to the main partition
+vfs->RegisterSymbolicLink("game:", "\\Device\\Harddisk0\\Partition1");
+vfs->RegisterSymbolicLink("d:", "\\Device\\Harddisk0\\Partition1");
+
+// Map update: to the update partition
+vfs->RegisterSymbolicLink("update:", "\\Device\\Harddisk0\\PartitionUpdate");
+```
+
+---
+
+### UnregisterSymbolicLink
+
+```cpp
+bool UnregisterSymbolicLink(const std::string_view path);
+```
+
+Unregisters a symbolic link.
+
+**Parameters:**
+- `path` - Virtual path to unregister
+
+**Returns:** `true` if unregistration succeeded, `false` if link not found.
+
+---
+
+### FindSymbolicLink
+
+```cpp
+bool FindSymbolicLink(const std::string_view path, std::string& target);
+```
+
+Looks up a symbolic link target.
+
+**Parameters:**
+- `path` - Virtual path to look up
+- `target` - Output parameter receiving the target path
+
+**Returns:** `true` if link found, `false` otherwise.
+
+## Path Resolution
+
+### ResolvePath
+
+```cpp
+Entry* ResolvePath(const std::string_view path);
+```
+
+Resolves a virtual path to a filesystem entry.
+
+This method:
+1. Resolves any symbolic links in the path
+2. Finds the appropriate mounted device
+3. Returns the entry from the device
+
+**Parameters:**
+- `path` - Virtual path to resolve (e.g., `"game:/default.xex"`)
+
+**Returns:** Pointer to the resolved `Entry`, or `nullptr` if not found.
+
+**Example:**
+```cpp
+Entry* entry = vfs->ResolvePath("game:/default.xex");
+if (entry) {
+  // Entry found, can open file
+}
+```
+
+## File Operations
+
+### CreatePath
+
+```cpp
+Entry* CreatePath(const std::string_view path, uint32_t attributes);
+```
+
+Creates a new file or directory at the specified path.
+
+**Parameters:**
+- `path` - Virtual path where to create the entry
+- `attributes` - File attributes (e.g., directory flag)
+
+**Returns:** Pointer to the created `Entry`, or `nullptr` on failure.
+
+---
+
+### DeletePath
+
+```cpp
+bool DeletePath(const std::string_view path);
+```
+
+Deletes a file or directory at the specified path.
+
+**Parameters:**
+- `path` - Virtual path to delete
+
+**Returns:** `true` if deletion succeeded, `false` otherwise.
+
+---
+
+### OpenFile
+
+```cpp
+X_STATUS OpenFile(Entry* root_entry,
+                  const std::string_view path,
+                  FileDisposition creation_disposition,
+                  uint32_t desired_access,
+                  bool is_directory,
+                  bool is_non_directory,
+                  File** out_file,
+                  FileAction* out_action);
+```
+
+Opens a file through the VFS.
+
+**Parameters:**
+- `root_entry` - Root entry for relative path resolution (or `nullptr` for absolute)
+- `path` - Path to the file
+- `creation_disposition` - How to handle existing files (open, create, etc.)
+- `desired_access` - Access flags (read, write, etc.)
+- `is_directory` - Must be a directory
+- `is_non_directory` - Must not be a directory
+- `out_file` - Output parameter receiving the opened `File` pointer
+- `out_action` - Output parameter receiving the action taken (opened, created, etc.)
+
+**Returns:** `X_STATUS` result code.
+
+## Runtime Integration
+
+The VFS is set up during runtime initialization in `Runtime::SetupVfs()`:
+
+```cpp
+bool Runtime::SetupVfs() {
+  // Mount game_data_root as \Device\Harddisk0\Partition1
+  auto device = std::make_unique<HostPathDevice>(
+    "\\Device\\Harddisk0\\Partition1",
+    game_data_root_,
+    true  // read_only
+  );
+  file_system_->RegisterDevice(std::move(device));
+
+  // Register symbolic links for game: and d:
+  file_system_->RegisterSymbolicLink("game:", "\\Device\\Harddisk0\\Partition1");
+  file_system_->RegisterSymbolicLink("d:", "\\Device\\Harddisk0\\Partition1");
+
+  // Mount update_data_root as update: if provided
+  if (!update_data_root_.empty()) {
+    auto update_device = std::make_unique<HostPathDevice>(
+      "\\Device\\Harddisk0\\PartitionUpdate",
+      update_data_root_,
+      true
+    );
+    file_system_->RegisterDevice(std::move(update_device));
+    file_system_->RegisterSymbolicLink("update:", "\\Device\\Harddisk0\\PartitionUpdate");
+  }
+
+  // Register NullDevice for cache/raw partition access
+  auto null_device = std::make_unique<NullDevice>(
+    "\\Device\\Harddisk0",
+    {"\\Partition0", "\\Cache0", "\\Cache1"}
+  );
+  file_system_->RegisterDevice(std::move(null_device));
+}
+```
+
+**Source:** `runtime.cpp:224-287`
+
+## Thread Safety
+
+VirtualFileSystem uses internal locking (`global_critical_region_`) to ensure thread-safe access to device and symbolic link registries.
+
+## See Also
+
+- [Runtime](/api/runtime) - Access VFS through `Runtime::file_system()`
+- [XexModule](/api/xex-module) - XEX module loading using VFS

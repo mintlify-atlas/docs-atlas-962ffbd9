@@ -1,0 +1,194 @@
+---
+title: IGraphicsSystem
+description: Abstract graphics system interface for rendering pipeline dependency injection
+---
+
+## Overview
+
+`IGraphicsSystem` is the abstract interface for graphics subsystems in ReXGlue. It provides dependency injection for different rendering backends including Direct3D 12 and Vulkan.
+
+**Header:** `rex/system/interfaces/graphics.h`
+
+**Namespace:** `rex::system`
+
+## Interface Methods
+
+### Setup
+
+```cpp
+virtual X_STATUS Setup(
+  runtime::Processor* processor,
+  KernelState* kernel_state,
+  ui::WindowedAppContext* app_context,
+  bool with_presentation
+) = 0;
+```
+
+Initializes the graphics system with the required runtime components.
+
+**Parameters:**
+- `processor` - Pointer to the CPU processor instance
+- `kernel_state` - Pointer to the kernel state manager
+- `app_context` - Windowed application context for presentation
+- `with_presentation` - Enable presentation layer if true
+
+**Returns:** `X_STATUS` - Status code indicating success or failure
+
+### Shutdown
+
+```cpp
+virtual void Shutdown() = 0;
+```
+
+Cleanly shuts down the graphics system and releases all resources.
+
+## Concrete Implementations
+
+### Direct3D 12
+
+**Class:** `rex::graphics::d3d12::D3D12GraphicsSystem`
+
+**Header:** `rex/graphics/d3d12/graphics_system.h`
+
+Direct3D 12 implementation providing Windows-native graphics rendering.
+
+```cpp
+class D3D12GraphicsSystem : public GraphicsSystem {
+public:
+  D3D12GraphicsSystem();
+  ~D3D12GraphicsSystem() override;
+  
+  static bool IsAvailable();
+  
+  std::string name() const override;
+  
+  X_STATUS Setup(
+    runtime::Processor* processor,
+    system::KernelState* kernel_state,
+    ui::WindowedAppContext* app_context,
+    bool with_presentation
+  ) override;
+  
+protected:
+  std::unique_ptr<CommandProcessor> CreateCommandProcessor() override;
+};
+```
+
+### Vulkan
+
+**Class:** `rex::graphics::vulkan::VulkanGraphicsSystem`
+
+**Header:** `rex/graphics/vulkan/graphics_system.h`
+
+Vulkan implementation providing cross-platform graphics rendering.
+
+```cpp
+class VulkanGraphicsSystem : public GraphicsSystem {
+public:
+  VulkanGraphicsSystem();
+  ~VulkanGraphicsSystem() override;
+  
+  static bool IsAvailable();
+  
+  std::string name() const override;
+  
+  X_STATUS Setup(
+    runtime::Processor* processor,
+    system::KernelState* kernel_state,
+    ui::WindowedAppContext* app_context,
+    bool with_presentation
+  ) override;
+  
+private:
+  std::unique_ptr<CommandProcessor> CreateCommandProcessor() override;
+};
+```
+
+## Base GraphicsSystem Class
+
+The concrete implementations extend `rex::graphics::GraphicsSystem`, which provides:
+
+**Key Methods:**
+- `memory()` - Access to memory subsystem
+- `processor()` - Access to CPU processor
+- `kernel_state()` - Access to kernel state
+- `provider()` - Graphics provider instance
+- `presenter()` - Presentation layer instance
+- `register_file()` - GPU register file access
+- `command_processor()` - Command processor instance
+- `InitializeRingBuffer(ptr, size_log2)` - Initialize GPU ring buffer
+- `EnableReadPointerWriteBack(ptr, block_size_log2)` - Enable read pointer writeback
+- `SetInterruptCallback(callback, user_data)` - Set GPU interrupt handler
+- `ClearCaches()` - Clear all GPU caches
+- `Pause()` / `Resume()` - Pause and resume rendering
+
+## Example Usage
+
+### Initializing D3D12 Graphics System
+
+```cpp
+#include <rex/graphics/d3d12/graphics_system.h>
+#include <rex/system/kernel_state.h>
+#include <rex/runtime/processor.h>
+#include <rex/ui/windowed_app_context.h>
+
+using namespace rex;
+
+// Check availability
+if (!graphics::d3d12::D3D12GraphicsSystem::IsAvailable()) {
+  // Fallback to another backend
+  return;
+}
+
+// Create the graphics system
+auto graphics = std::make_unique<graphics::d3d12::D3D12GraphicsSystem>();
+
+// Setup with runtime components
+X_STATUS status = graphics->Setup(
+  processor,
+  kernel_state,
+  app_context,
+  true  // Enable presentation
+);
+
+if (status != X_STATUS_SUCCESS) {
+  // Handle error
+}
+
+// Use the graphics system...
+
+// Cleanup
+graphics->Shutdown();
+```
+
+### Initializing Vulkan Graphics System
+
+```cpp
+#include <rex/graphics/vulkan/graphics_system.h>
+
+using namespace rex;
+
+// Create Vulkan graphics system
+auto graphics = std::make_unique<graphics::vulkan::VulkanGraphicsSystem>();
+
+X_STATUS status = graphics->Setup(
+  processor,
+  kernel_state,
+  app_context,
+  true
+);
+
+if (status == X_STATUS_SUCCESS) {
+  // Initialize shaders and resources
+  graphics->InitializeShaderStorage(cache_path, title_id, false);
+  
+  // Set interrupt callback for GPU events
+  graphics->SetInterruptCallback(callback_func, user_data);
+}
+```
+
+## See Also
+
+- [KernelState](/api/kernel-state) - Kernel state management
+- [IAudioSystem](/api/audio-system) - Audio subsystem interface
+- [IInputSystem](/api/input-system) - Input subsystem interface

@@ -1,0 +1,402 @@
+---
+title: Custom Hooks
+description: Customizing application behavior with virtual hooks
+---
+
+ReXApp provides virtual hook methods that allow you to customize application behavior without modifying framework code. Override these methods in your subclass to inject custom logic at specific points in the application lifecycle.
+
+## Available Hooks
+
+All hooks are defined in `rex/rex_app.h:88-103`.
+
+### OnPreSetup
+
+```cpp
+virtual void OnPreSetup(RuntimeConfig& config)
+```
+
+Called before `Runtime::Setup()`. This is your opportunity to configure backend injection.
+
+**Typical uses:**
+- Set graphics backend (Vulkan, OpenGL)
+- Set audio backend (SDL, custom)
+- Set input backend (SDL, custom)
+- Enable tool mode
+
+**Example:**
+
+```cpp
+void OnPreSetup(RuntimeConfig& config) override {
+  // Inject Vulkan graphics
+  config.graphics = REX_GRAPHICS_BACKEND(
+      rex::graphics::vulkan::VulkanGraphicsSystem);
+  
+  // Inject SDL backends
+  config.audio_factory = REX_AUDIO_BACKEND(
+      rex::audio::sdl::SDLAudioSystem);
+  config.input_factory = REX_INPUT_BACKEND(
+      rex::input::sdl::SetupSDLInput);
+}
+```
+
+See `rex/rex_app.h:90`
+
+### OnPostSetup
+
+```cpp
+virtual void OnPostSetup()
+```
+
+Called after Runtime is fully initialized, before window creation.
+
+**Typical uses:**
+- Query subsystem state
+- Configure kernel objects
+- Set up custom memory regions
+- Initialize game-specific systems
+
+**Example:**
+
+```cpp
+void OnPostSetup() override {
+  // Access runtime subsystems
+  auto* kernel = runtime()->kernel_state();
+  auto* vfs = runtime()->file_system();
+  
+  // Check if game data is valid
+  if (!vfs->ResolvePath("game:/default.xex")) {
+    REXLOG_ERROR("Failed to find game executable");
+  }
+  
+  // Initialize custom logging
+  REXLOG_INFO("Game data root: {}", game_data_root().string());
+}
+```
+
+See `rex/rex_app.h:93`
+
+### OnConfigurePaths
+
+```cpp
+virtual void OnConfigurePaths(PathConfig& paths)
+```
+
+Called after path defaults are computed from CLI args, before Runtime is constructed.
+
+**Typical uses:**
+- Override default paths programmatically
+- Apply platform-specific path logic
+- Validate or create directories
+
+**Example:**
+
+```cpp
+void OnConfigurePaths(PathConfig& paths) override {
+  // Use XDG_DATA_HOME on Linux
+#ifdef __linux__
+  const char* xdg_data = std::getenv("XDG_DATA_HOME");
+  if (xdg_data) {
+    paths.user_data_root = std::filesystem::path(xdg_data) / "my_game";
+  }
+#endif
+  
+  // Ensure user data directory exists
+  std::filesystem::create_directories(paths.user_data_root);
+  
+  REXLOG_INFO("User data: {}", paths.user_data_root.string());
+}
+```
+
+See `rex/rex_app.h:102-103`
+
+### OnCreateDialogs
+
+```cpp
+virtual void OnCreateDialogs(ui::ImGuiDrawer* drawer)
+```
+
+Called after ImGui drawer is created. Add custom dialogs and UI here.
+
+**Typical uses:**
+- Register custom debug overlays
+- Add game-specific UI panels
+- Create settings dialogs
+
+**Example:**
+
+```cpp
+class MyGameApp : public rex::ReXApp {
+ protected:
+  void OnCreateDialogs(ui::ImGuiDrawer* drawer) override {
+    // Add custom debug panel
+    auto* stats_dialog = new GameStatsDialog(drawer);
+    drawer->AddDialog(stats_dialog);
+    
+    // Add custom settings
+    auto* settings = new GraphicsSettingsDialog(drawer);
+    drawer->AddDialog(settings);
+  }
+  
+ private:
+  class GameStatsDialog : public rex::ui::ImGuiDialog {
+   public:
+    using ImGuiDialog::ImGuiDialog;
+   protected:
+    void OnDraw(ImGuiIO& io) override {
+      ImGui::Begin("Game Stats");
+      ImGui::Text("FPS: %.1f", io.Framerate);
+      // ... custom stats
+      ImGui::End();
+    }
+  };
+};
+```
+
+See `rex/rex_app.h:96`
+
+### OnShutdown
+
+```cpp
+virtual void OnShutdown()
+```
+
+Called before cleanup begins. Release custom resources here.
+
+**Typical uses:**
+- Save user data or settings
+- Release custom subsystems
+- Flush logs
+- Clean up background threads
+
+**Example:**
+
+```cpp
+class MyGameApp : public rex::ReXApp {
+ protected:
+  void OnShutdown() override {
+    // Save user preferences
+    SaveUserSettings(user_data_root() / "settings.json");
+    
+    // Stop background tasks
+    if (background_thread_.joinable()) {
+      stop_flag_.store(true);
+      background_thread_.join();
+    }
+    
+    REXLOG_INFO("Application shutdown complete");
+  }
+  
+ private:
+  std::thread background_thread_;
+  std::atomic<bool> stop_flag_{false};
+};
+```
+
+See `rex/rex_app.h:99`
+
+## Hook Execution Order
+
+Hooks are called in this sequence during application startup:
+
+<Steps>
+  <Step title="OnConfigurePaths">
+    Customize filesystem paths before Runtime construction.
+  </Step>
+  
+  <Step title="Runtime Construction">
+    Runtime is created with configured paths.
+  </Step>
+  
+  <Step title="OnPreSetup">
+    Configure backend injection (graphics, audio, input).
+  </Step>
+  
+  <Step title="Runtime::Setup">
+    All subsystems are initialized with injected backends.
+  </Step>
+  
+  <Step title="OnPostSetup">
+    Runtime is ready, window not yet created.
+  </Step>
+  
+  <Step title="Window & ImGui Creation">
+    Window and ImGui drawer are created.
+  </Step>
+  
+  <Step title="OnCreateDialogs">
+    Add custom UI dialogs.
+  </Step>
+  
+  <Step title="Module Launch">
+    PPC module starts executing on background thread.
+  </Step>
+</Steps>
+
+During shutdown:
+
+<Steps>
+  <Step title="OnShutdown">
+    Release custom resources before framework cleanup.
+  </Step>
+  
+  <Step title="Framework Cleanup">
+    ReXApp destroys Runtime, window, and UI systems.
+  </Step>
+</Steps>
+
+## Complete Example
+
+Here's a full example using all hooks:
+
+```cpp
+#include "generated/my_game_config.h"
+#include "generated/my_game_init.h"
+#include <rex/rex_app.h>
+#include <fstream>
+
+class MyGameApp : public rex::ReXApp {
+ public:
+  using rex::ReXApp::ReXApp;
+
+  static std::unique_ptr<rex::ui::WindowedApp> Create(
+      rex::ui::WindowedAppContext& ctx) {
+    return std::unique_ptr<MyGameApp>(new MyGameApp(ctx, "my_game",
+        {PPC_CODE_BASE, PPC_CODE_SIZE, PPC_IMAGE_BASE,
+         PPC_IMAGE_SIZE, PPCFuncMappings}));
+  }
+
+ protected:
+  // 1. Configure paths first
+  void OnConfigurePaths(PathConfig& paths) override {
+    // Use platform-specific user data location
+    auto home = std::filesystem::path(std::getenv("HOME"));
+    paths.user_data_root = home / ".local" / "share" / "my_game";
+    std::filesystem::create_directories(paths.user_data_root);
+  }
+  
+  // 2. Inject backends before Runtime setup
+  void OnPreSetup(RuntimeConfig& config) override {
+    config.graphics = REX_GRAPHICS_BACKEND(
+        rex::graphics::vulkan::VulkanGraphicsSystem);
+    config.audio_factory = REX_AUDIO_BACKEND(
+        rex::audio::sdl::SDLAudioSystem);
+    config.input_factory = REX_INPUT_BACKEND(
+        rex::input::sdl::SetupSDLInput);
+    
+    REXLOG_INFO("Backends configured");
+  }
+  
+  // 3. Post-setup validation
+  void OnPostSetup() override {
+    // Verify game data
+    auto* vfs = runtime()->file_system();
+    if (!vfs->ResolvePath("game:/default.xex")) {
+      REXLOG_ERROR("Game executable not found!");
+    }
+    
+    // Load user settings
+    LoadUserSettings();
+  }
+  
+  // 4. Add custom UI
+  void OnCreateDialogs(ui::ImGuiDrawer* drawer) override {
+    drawer->AddDialog(new GameStatsDialog(drawer));
+  }
+  
+  // 5. Clean shutdown
+  void OnShutdown() override {
+    SaveUserSettings();
+    REXLOG_INFO("Saved user settings");
+  }
+
+ private:
+  void LoadUserSettings() {
+    auto settings_path = user_data_root() / "settings.json";
+    if (std::filesystem::exists(settings_path)) {
+      // Load settings...
+      REXLOG_INFO("Loaded settings from {}", settings_path.string());
+    }
+  }
+  
+  void SaveUserSettings() {
+    auto settings_path = user_data_root() / "settings.json";
+    // Save settings...
+  }
+  
+  class GameStatsDialog : public rex::ui::ImGuiDialog {
+   public:
+    using ImGuiDialog::ImGuiDialog;
+   protected:
+    void OnDraw(ImGuiIO& io) override {
+      ImGui::Begin("Game Stats");
+      ImGui::Text("FPS: %.1f", io.Framerate);
+      ImGui::End();
+    }
+  };
+};
+
+REX_DEFINE_APP(my_game, MyGameApp::Create)
+```
+
+## Best Practices
+
+### Do
+
+- Override only the hooks you need
+- Call base class implementation if you override and want default behavior
+- Use REXLOG macros for debugging hook execution
+- Keep hooks focused and minimal
+- Use `OnPreSetup` for all backend configuration
+- Use `OnPostSetup` to validate runtime state
+- Use `OnShutdown` to save user data
+
+### Don't
+
+- Don't perform long-running operations in hooks (blocks startup)
+- Don't access runtime() before OnPostSetup
+- Don't access window() or imgui_drawer() before OnCreateDialogs
+- Don't spawn threads in OnPreSetup (runtime not ready)
+- Don't forget to clean up resources created in hooks
+
+## Thread Safety
+
+Hooks are called on the main thread during initialization. The PPC module thread starts after all hooks complete. If you spawn additional threads in hooks, ensure proper synchronization:
+
+```cpp
+class MyGameApp : public rex::ReXApp {
+ protected:
+  void OnPostSetup() override {
+    // Safe - main thread, no PPC thread yet
+    worker_thread_ = std::thread([this]() {
+      // Background work
+      // Use atomics/mutexes for shared state
+    });
+  }
+  
+  void OnShutdown() override {
+    // Stop worker before shutdown
+    if (worker_thread_.joinable()) {
+      stop_flag_.store(true);
+      worker_thread_.join();
+    }
+  }
+  
+ private:
+  std::thread worker_thread_;
+  std::atomic<bool> stop_flag_{false};
+};
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="ReXApp Base Class" icon="code" href="/app/rexapp">
+    Learn about the application framework
+  </Card>
+  <Card title="Runtime Setup" icon="gear" href="/app/runtime-setup">
+    Configure backend systems
+  </Card>
+  <Card title="UI Integration" icon="window" href="/app/ui-integration">
+    Add custom ImGui dialogs
+  </Card>
+</CardGroup>

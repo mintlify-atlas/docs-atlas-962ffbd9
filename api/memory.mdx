@@ -1,0 +1,465 @@
+---
+title: 'rex::memory::Memory'
+description: 'Xbox 360 guest memory system with virtual and physical heaps'
+---
+
+## Overview
+
+The `Memory` class models the entire Xbox 360 guest memory system, providing interfaces to both virtual and physical memory with TLB and page table management for allocation, mapping, and protection.
+
+<Note>
+The memory is backed by a memory-mapped file and placed at a stable fixed host address (typically `0x100000000`). This allows efficient guest-to-host address translation and easy sharing across subsystems.
+</Note>
+
+## Memory Layout
+
+The guest memory address space is split into several ranges with varying properties:
+
+- **Virtual Heaps**: Standard guest virtual address ranges
+- **Physical Heaps**: Hardware-mapped memory for audio/graphics subsystems
+- Each range has its own page size, caching strategy, and protection settings
+
+## Class Definition
+
+```cpp
+namespace rex::memory {
+  class Memory;
+}
+```
+
+## Initialization
+
+### Memory()
+
+Constructs a new Memory instance.
+
+```cpp
+Memory();
+```
+
+### Initialize()
+
+Initializes the memory system by reserving host address space and setting up the memory-mapped file.
+
+```cpp
+bool Initialize();
+```
+
+**Returns**: `true` on success, `false` if host address space reservation or file mapping fails
+
+### Reset()
+
+Resets all memory to zero and clears all allocations.
+
+```cpp
+void Reset();
+```
+
+## Address Translation
+
+### TranslateVirtual()
+
+Translates a guest virtual address to a host pointer.
+
+```cpp
+template <typename T = uint8_t*>
+T TranslateVirtual(uint32_t guest_address) const;
+```
+
+**Parameters**:
+- `guest_address` - Guest virtual address to translate
+
+**Returns**: Host pointer to the memory location
+
+<Note>
+The contents at the translated host address are in **big-endian** byte order.
+</Note>
+
+### TranslatePhysical()
+
+Translates a guest physical address to a host pointer.
+
+```cpp
+template <typename T = uint8_t*>
+T TranslatePhysical(uint32_t guest_address) const;
+```
+
+**Parameters**:
+- `guest_address` - Guest physical address to translate
+
+**Returns**: Host pointer to the memory location
+
+### HostToGuestVirtual()
+
+Translates a host address back to a guest virtual address.
+
+```cpp
+uint32_t HostToGuestVirtual(const void* host_address) const;
+```
+
+**Parameters**:
+- `host_address` - Host pointer to translate
+
+**Returns**: Guest virtual address
+
+### GetPhysicalAddress()
+
+Returns the guest physical address for a given guest virtual address.
+
+```cpp
+uint32_t GetPhysicalAddress(uint32_t address) const;
+```
+
+**Parameters**:
+- `address` - Guest virtual address
+
+**Returns**: Guest physical address, or `UINT32_MAX` if unavailable
+
+## Memory Operations
+
+### Zero()
+
+Zeros out a range of guest memory.
+
+```cpp
+void Zero(uint32_t address, uint32_t size);
+```
+
+**Parameters**:
+- `address` - Starting guest address
+- `size` - Number of bytes to zero
+
+### Fill()
+
+Fills a range of guest memory with a byte value.
+
+```cpp
+void Fill(uint32_t address, uint32_t size, uint8_t value);
+```
+
+**Parameters**:
+- `address` - Starting guest address
+- `size` - Number of bytes to fill
+- `value` - Byte value to write
+
+### Copy()
+
+Copies a non-overlapping range of guest memory.
+
+```cpp
+void Copy(uint32_t dest, uint32_t src, uint32_t size);
+```
+
+**Parameters**:
+- `dest` - Destination guest address
+- `src` - Source guest address
+- `size` - Number of bytes to copy
+
+### SearchAligned()
+
+Searches for a sequence of dword values in big-endian order.
+
+```cpp
+uint32_t SearchAligned(uint32_t start, uint32_t end, 
+                       const uint32_t* values, size_t value_count);
+```
+
+**Parameters**:
+- `start` - Starting guest address
+- `end` - Ending guest address
+- `values` - Array of dword values to search for
+- `value_count` - Number of values in the array
+
+**Returns**: Guest address where the sequence was found, or 0 if not found
+
+## System Heap Allocation
+
+### SystemHeapAlloc()
+
+Allocates virtual memory from the system heap for kernel structures and internal allocations.
+
+```cpp
+uint32_t SystemHeapAlloc(uint32_t size, uint32_t alignment = 0x20,
+                         uint32_t system_heap_flags = kSystemHeapDefault);
+```
+
+**Parameters**:
+- `size` - Number of bytes to allocate
+- `alignment` - Alignment requirement (default: 32 bytes)
+- `system_heap_flags` - Allocation flags (see `SystemHeapFlag`)
+
+**Returns**: Guest address of allocated memory, or 0 on failure
+
+### SystemHeapFree()
+
+Frees memory allocated with `SystemHeapAlloc()`.
+
+```cpp
+void SystemHeapFree(uint32_t address);
+```
+
+**Parameters**:
+- `address` - Guest address to free
+
+## Heap Management
+
+### LookupHeap()
+
+Gets the heap containing the given address.
+
+```cpp
+const BaseHeap* LookupHeap(uint32_t address) const;
+BaseHeap* LookupHeap(uint32_t address);
+```
+
+**Parameters**:
+- `address` - Guest address to lookup
+
+**Returns**: Pointer to the heap, or `nullptr` if not found
+
+### LookupHeapByType()
+
+Gets a heap with specific properties.
+
+```cpp
+BaseHeap* LookupHeapByType(bool physical, uint32_t page_size);
+```
+
+**Parameters**:
+- `physical` - `true` for physical heap, `false` for virtual
+- `page_size` - Required page size
+
+**Returns**: Pointer to matching heap, or `nullptr`
+
+### GetPhysicalHeap()
+
+Gets the physical base heap.
+
+```cpp
+VirtualHeap* GetPhysicalHeap();
+```
+
+**Returns**: Pointer to the physical heap
+
+## MMIO (Memory-Mapped I/O)
+
+### AddVirtualMappedRange()
+
+Defines an MMIO virtual address range with read/write callbacks.
+
+```cpp
+bool AddVirtualMappedRange(uint32_t virtual_address, uint32_t mask, uint32_t size,
+                           void* context,
+                           runtime::MMIOReadCallback read_callback,
+                           runtime::MMIOWriteCallback write_callback);
+```
+
+**Parameters**:
+- `virtual_address` - Starting virtual address
+- `mask` - Address mask
+- `size` - Size of the range
+- `context` - User context pointer passed to callbacks
+- `read_callback` - Callback for read operations
+- `write_callback` - Callback for write operations
+
+**Returns**: `true` on success
+
+### LookupVirtualMappedRange()
+
+Gets the MMIO range for a virtual address.
+
+```cpp
+runtime::MMIORange* LookupVirtualMappedRange(uint32_t virtual_address);
+```
+
+**Parameters**:
+- `virtual_address` - Address to lookup
+
+**Returns**: Pointer to MMIO range, or `nullptr`
+
+## Physical Memory Callbacks
+
+### RegisterPhysicalMemoryInvalidationCallback()
+
+Registers a callback for physical memory invalidation events.
+
+```cpp
+void* RegisterPhysicalMemoryInvalidationCallback(
+    PhysicalMemoryInvalidationCallback callback,
+    void* callback_context);
+```
+
+**Parameters**:
+- `callback` - Callback function
+- `callback_context` - User context pointer
+
+**Returns**: Handle for unregistering the callback
+
+### UnregisterPhysicalMemoryInvalidationCallback()
+
+Unregisters a physical memory invalidation callback.
+
+```cpp
+void UnregisterPhysicalMemoryInvalidationCallback(void* callback_handle);
+```
+
+**Parameters**:
+- `callback_handle` - Handle returned from registration
+
+### EnablePhysicalMemoryAccessCallbacks()
+
+Enables physical memory access callbacks for a memory range.
+
+```cpp
+void EnablePhysicalMemoryAccessCallbacks(
+    uint32_t physical_address, uint32_t length,
+    bool enable_invalidation_notifications,
+    bool enable_data_providers);
+```
+
+**Parameters**:
+- `physical_address` - Starting physical address
+- `length` - Length of the range
+- `enable_invalidation_notifications` - Enable write invalidation callbacks
+- `enable_data_providers` - Enable data provider callbacks
+
+## Function Table API
+
+<Note>
+These methods support static recompilation by providing a function dispatch table stored in guest memory at `IMAGE_BASE + IMAGE_SIZE`.
+</Note>
+
+### InitializeFunctionTable()
+
+Initializes the function table region for recompiled code dispatch.
+
+```cpp
+bool InitializeFunctionTable(uint32_t code_base, uint32_t code_size,
+                             uint32_t image_base, uint32_t image_size);
+```
+
+**Parameters**:
+- `code_base` - Base address of code section
+- `code_size` - Size of code section
+- `image_base` - Base address of executable image
+- `image_size` - Size of executable image
+
+**Returns**: `true` on success, `false` if allocation fails
+
+### SetFunction()
+
+Registers a host function for a guest address.
+
+```cpp
+void SetFunction(uint32_t guest_address, PPCFunc* host_function);
+```
+
+**Parameters**:
+- `guest_address` - Guest address to map
+- `host_function` - Host function pointer
+
+### GetFunction()
+
+Gets the registered host function for a guest address.
+
+```cpp
+PPCFunc* GetFunction(uint32_t guest_address) const;
+```
+
+**Parameters**:
+- `guest_address` - Guest address to lookup
+
+**Returns**: Host function pointer, or `nullptr` if not registered
+
+### HasFunctionTable()
+
+Checks if the function table has been initialized.
+
+```cpp
+bool HasFunctionTable() const;
+```
+
+**Returns**: `true` if initialized
+
+## Properties
+
+### file_name()
+
+Gets the path to the memory-mapped backing file.
+
+```cpp
+const std::filesystem::path& file_name() const;
+```
+
+### virtual_membase()
+
+Gets the base address of virtual memory in host address space.
+
+```cpp
+uint8_t* virtual_membase() const;
+```
+
+<Note>
+This is typically `0x100000000` on 64-bit systems.
+</Note>
+
+### physical_membase()
+
+Gets the base address of physical memory in host address space.
+
+```cpp
+uint8_t* physical_membase() const;
+```
+
+<Note>
+This is typically `0x200000000` on 64-bit systems.
+</Note>
+
+## Enumerations
+
+### SystemHeapFlag
+
+```cpp
+enum SystemHeapFlag : uint32_t {
+  kSystemHeapVirtual = 1 << 0,
+  kSystemHeapPhysical = 1 << 1,
+  kSystemHeapDefault = kSystemHeapVirtual
+};
+```
+
+### HeapType
+
+```cpp
+enum class HeapType : uint8_t {
+  kGuestVirtual,
+  kGuestXex,
+  kGuestPhysical,
+  kHostPhysical
+};
+```
+
+### MemoryAllocationFlag
+
+```cpp
+enum MemoryAllocationFlag : uint32_t {
+  kMemoryAllocationReserve = 1 << 0,
+  kMemoryAllocationCommit = 1 << 1
+};
+```
+
+### MemoryProtectFlag
+
+```cpp
+enum MemoryProtectFlag : uint32_t {
+  kMemoryProtectRead = 1 << 0,
+  kMemoryProtectWrite = 1 << 1,
+  kMemoryProtectNoCache = 1 << 2,
+  kMemoryProtectWriteCombine = 1 << 3,
+  kMemoryProtectNoAccess = 0
+};
+```
+
+## See Also
+
+- [Processor](/api/processor) - CPU emulation and execution
+- [XThread](/api/thread) - Thread management
